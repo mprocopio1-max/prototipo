@@ -108,12 +108,19 @@
         canvas.width = size;
         canvas.height = size;
         const ctx = canvas.getContext("2d");
-        ctx.clearRect(0, 0, size, size);
-        ctx.strokeStyle = "rgba(255,255,255,0.95)";
-        ctx.lineWidth = 3;
-        ctx.strokeRect(10, 10, size - 20, size - 20);
-        ctx.fillStyle = "rgba(255,255,255,0.22)";
-        ctx.fillRect(18, 18, size - 36, size - 36);
+            ctx.clearRect(0, 0, size, size);
+            // draw a circular marker rather than a square
+            const cx = size * 0.5;
+            const cy = size * 0.5;
+            const radius = size * 0.36;
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+            ctx.closePath();
+            ctx.fillStyle = "rgba(255,255,255,0.22)";
+            ctx.fill();
+            ctx.strokeStyle = "rgba(255,255,255,0.95)";
+            ctx.lineWidth = 3;
+            ctx.stroke();
         return new THREE.CanvasTexture(canvas);
       }
 
@@ -352,7 +359,8 @@
           this.labelActive = index % 12 === 0;
           this.group = new THREE.Group();
 
-          const geometry = Math.random() > 0.45 ? new THREE.BoxGeometry(1.8, 1.8, 1.8) : new THREE.SphereGeometry(1.15, 8, 8);
+          // force circular / spherical node bodies
+          const geometry = new THREE.SphereGeometry(1.6, 16, 16);
           this.body = new THREE.Mesh(
             geometry,
             new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 })
