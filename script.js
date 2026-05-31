@@ -31,7 +31,9 @@
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      if (THREE && typeof THREE.SRGBColorSpace !== "undefined") {
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+      }
       renderer.setClearColor(0x000000, 1);
       renderer.domElement.style.touchAction = "none";
       document.body.appendChild(renderer.domElement);
@@ -55,7 +57,23 @@
       const presencePlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
       const clock = new THREE.Clock();
       const uiStats = document.getElementById("stats");
-      const startHint = document.getElementById("startHint");
+      let startHint = document.getElementById("startHint");
+      if (!startHint) {
+        startHint = document.createElement("div");
+        startHint.id = "startHint";
+        startHint.style.position = "fixed";
+        startHint.style.left = "18px";
+        startHint.style.bottom = "18px";
+        startHint.style.padding = "8px 10px";
+        startHint.style.background = "rgba(0,0,0,0.36)";
+        startHint.style.color = "#fff";
+        startHint.style.borderRadius = "6px";
+        startHint.style.zIndex = 9998;
+        startHint.style.fontFamily = "sans-serif";
+        startHint.style.fontSize = "13px";
+        startHint.textContent = "awaiting permissions";
+        document.body.appendChild(startHint);
+      }
 
       const tmpVecA = new THREE.Vector3();
       const tmpVecB = new THREE.Vector3();
@@ -146,6 +164,26 @@
         label: createLabelTexture("NODE // MEMORY TRACE"),
         marker: createSquareTexture(),
       };
+
+      // billboards list for camera-facing circle meshes
+      const billboards = [];
+
+      function createBillboardCircle(texture, diameter = 1, options = {}) {
+        const geom = new THREE.CircleGeometry(0.5, 32);
+        const mat = new THREE.MeshBasicMaterial({
+          map: texture,
+          transparent: true,
+          depthWrite: false,
+          blending: options.additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+          side: THREE.DoubleSide,
+          opacity: options.opacity !== undefined ? options.opacity : 1,
+        });
+        const mesh = new THREE.Mesh(geom, mat);
+        mesh.scale.set(diameter, diameter, 1);
+        mesh.userData.isBillboard = true;
+        billboards.push(mesh);
+        return mesh;
+      }
 
       class MemoryField {
         constructor(volume = 420) {
@@ -367,29 +405,10 @@
           );
           this.group.add(this.body);
 
-          this.glow = new THREE.Sprite(
-            new THREE.SpriteMaterial({
-              map: textureSet.glow,
-              color: 0xffffff,
-              transparent: true,
-              depthWrite: false,
-              blending: THREE.AdditiveBlending,
-              opacity: 0.14,
-            })
-          );
-          this.glow.scale.set(12, 12, 1);
+          this.glow = createBillboardCircle(textureSet.glow, 12, { additive: true, opacity: 0.14 });
           this.group.add(this.glow);
 
-          this.marker = new THREE.Sprite(
-            new THREE.SpriteMaterial({
-              map: textureSet.marker,
-              color: 0xffffff,
-              transparent: true,
-              depthWrite: false,
-              opacity: 0.45,
-            })
-          );
-          this.marker.scale.set(3.8, 3.8, 1);
+          this.marker = createBillboardCircle(textureSet.marker, 3.8, { opacity: 0.45 });
           this.marker.position.set(0, 2.4, 0);
           this.group.add(this.marker);
 
@@ -626,19 +645,15 @@
               depthWrite: false,
             })
           );
-          this.halo = new THREE.Sprite(
-            new THREE.SpriteMaterial({
-              map: textures.glow,
-              color: 0xffffff,
-              transparent: true,
-              depthWrite: false,
-              blending: THREE.AdditiveBlending,
-              opacity: 0.68,
-            })
-          );
-          this.halo.scale.set(6.5, 6.5, 1);
+          this.halo = createBillboardCircle(textures.glow, 6.5, { additive: true, opacity: 0.68 });
           this.mesh.add(this.halo);
-          this.soundEngine.emitPing(0.35 + this.connection.baseStrength * 0.45 + this.connection.activation * 0.04);
+          // Avoid firing a ping for every small visual pulse — only emit for stronger disturbances
+          if (this.soundEngine && this.soundEngine.disturbance > 0.34) {
+            // lower intensity for per-pulse pings and add some randomness to thin events
+            if (Math.random() < 0.7) {
+              this.soundEngine.emitPing(0.18 + this.connection.baseStrength * 0.18 + this.connection.activation * 0.02);
+            }
+          }
         }
 
         update(dt, time) {
@@ -708,12 +723,14 @@
             this.droneOscillators.push(osc);
           }
 
-          this.pingSynth = new Tone.MembraneSynth({
-            pitchDecay: 0.012,
-            octaves: 6,
+          // softened per-pulse synth: sine oscillator with slower attack/decay
+          this.pingFilter = new Tone.Filter({ frequency: 1400, type: "lowpass", rolloff: -12 });
+          this.pingSynth = new Tone.Synth({
             oscillator: { type: "sine" },
-            envelope: { attack: 0.001, decay: 0.12, sustain: 0 },
-          }).connect(this.reverb);
+            envelope: { attack: 0.018, decay: 0.28, sustain: 0.02, release: 0.36 },
+            volume: -12,
+          }).connect(this.pingFilter);
+          this.pingFilter.connect(this.reverb);
 
           this.resonanceSynth = new Tone.FMSynth({
             harmonicity: 1.5,
@@ -726,7 +743,7 @@
 
           this.glitchSynth = new Tone.NoiseSynth({
             noise: { type: "white" },
-            envelope: { attack: 0.001, decay: 0.08, sustain: 0 },
+            envelope: { attack: 0.002, decay: 0.12, sustain: 0 },
           }).connect(this.noiseGain);
 
           this.ready = true;
@@ -740,17 +757,26 @@
           if (!this.ready) {
             return;
           }
-          const now = Tone.now();
-          const note = 44 + intensity * 24;
-          this.pingSynth.triggerAttackRelease(note, "8n", now, 0.35 + intensity * 0.45);
+          try {
+            const now = Tone.now() + 0.002;
+            const note = 44 + intensity * 24;
+            this.pingSynth.triggerAttackRelease(note, "8n", now, 0.35 + intensity * 0.45);
+          } catch (e) {
+            // fallback: trigger immediately
+            try { this.pingSynth.triggerAttackRelease(44 + intensity * 24, "8n"); } catch (e) {}
+          }
         }
 
         emitResonance(intensity = 0.5, frequency = 110) {
           if (!this.ready || !this.resonanceSynth) {
             return;
           }
-          const now = Tone.now();
-          this.resonanceSynth.triggerAttackRelease(frequency, "8n", now, 0.2 + intensity * 0.25);
+          try {
+            const now = Tone.now() + 0.002;
+            this.resonanceSynth.triggerAttackRelease(frequency, "8n", now, 0.2 + intensity * 0.25);
+          } catch (e) {
+            try { this.resonanceSynth.triggerAttackRelease(frequency, "8n"); } catch (e) {}
+          }
         }
 
         setArchiveTraces(traces) {
@@ -825,14 +851,20 @@
           }
 
           this.pingTimer -= dt;
-          const pingInterval = lerpRange(stage2 + stage3 + stage4 + stage5, 0, 4, 2.4, 0.18);
-          if (stage2 > 0 && this.pingTimer <= 0) {
-            this.emitPing(0.16 + stage2 * 0.32 + stage5 * 0.3);
-            this.pingTimer = pingInterval + Math.random() * pingInterval * 0.35;
+          // Use a higher stage (stage3) to avoid micro-pings at low disturbance,
+          // increase base interval and thin events probabilistically.
+          const pingSourceStage = stage3;
+          const pingInterval = lerpRange(pingSourceStage + stage4 + stage5, 0, 4, 3.2, 0.6);
+          if (pingSourceStage > 0 && this.pingTimer <= 0) {
+            if (Math.random() < clamp01(0.38 + pingSourceStage * 0.6 + stage5 * 0.4)) {
+              this.emitPing(0.12 + pingSourceStage * 0.22 + stage5 * 0.25);
+            }
+            this.pingTimer = pingInterval + Math.random() * pingInterval * 0.45;
           }
 
-          if (this.noiseAmount > 0.15) {
-            this.emitGlitch(this.noiseAmount);
+          // Increase glitch threshold to reduce frequent micro-glitches
+          if (this.noiseAmount > 0.32) {
+            this.emitGlitch(this.noiseAmount * 0.85);
           }
         }
       }
@@ -1629,35 +1661,37 @@
       const sessionTraceGroup = new THREE.Group();
       scene.add(sessionTraceGroup);
 
-      const presenceOrb = new THREE.Mesh(
-        new THREE.SphereGeometry(2.2, 14, 14),
-        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.0 })
-      );
+      // presenceGroup replaces the previous presenceOrb mesh (remove central sphere)
+      const presenceGroup = new THREE.Group();
       const faceShell = new THREE.Mesh(
         new THREE.SphereGeometry(14, 20, 20),
         new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.0, wireframe: true })
       );
+      // debug markers: small cube and sphere to verify rendering
+      const _debugCube = new THREE.Mesh(
+        new THREE.BoxGeometry(6, 6, 6),
+        new THREE.MeshBasicMaterial({ color: 0xff0000 })
+      );
+      _debugCube.position.set(0, 0, 0);
+      scene.add(_debugCube);
+
+      const _debugSphere = new THREE.Mesh(
+        new THREE.SphereGeometry(3, 12, 12),
+        new THREE.MeshBasicMaterial({ color: 0x00ff00 })
+      );
+      _debugSphere.position.copy(camera.position).add(new THREE.Vector3(0, -8, -40));
+      scene.add(_debugSphere);
       const handBridgeGeometry = new THREE.BufferGeometry();
       handBridgeGeometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
       const handBridge = new THREE.Line(
         handBridgeGeometry,
         new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.0, depthWrite: false })
       );
-      const presenceHalo = new THREE.Sprite(
-        new THREE.SpriteMaterial({
-          map: textures.glow,
-          color: 0xffffff,
-          transparent: true,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending,
-          opacity: 0.0,
-        })
-      );
-      presenceHalo.scale.set(10, 10, 1);
-      presenceOrb.add(presenceHalo);
+      const presenceHalo = createBillboardCircle(textures.glow, 10, { additive: true, opacity: 0.0 });
+      presenceGroup.add(presenceHalo);
         sessionTraceGroup.add(faceShell);
         sessionTraceGroup.add(handBridge);
-      sessionTraceGroup.add(presenceOrb);
+      sessionTraceGroup.add(presenceGroup);
 
       const archiveVisuals = [];
       const liveTraceLinks = new Map();
@@ -1798,17 +1832,7 @@
             new THREE.SphereGeometry(1.2, 10, 10),
             new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.08 })
           );
-          const halo = new THREE.Sprite(
-            new THREE.SpriteMaterial({
-              map: textures.glow,
-              color: 0xffffff,
-              transparent: true,
-              depthWrite: false,
-              blending: THREE.AdditiveBlending,
-              opacity: 0.08,
-            })
-          );
-          halo.scale.set(8, 8, 1);
+          const halo = createBillboardCircle(textures.glow, 8, { additive: true, opacity: 0.08 });
           ghostNode.position.copy(anchor);
           ghostNode.add(halo);
           archiveGroup.add(ghostNode);
@@ -1843,22 +1867,12 @@
 
       function spawnSessionNode(position, traceLabel) {
         const node = new THREE.Mesh(
-          new THREE.BoxGeometry(2, 2, 2),
+          new THREE.SphereGeometry(1.4, 12, 12),
           new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.42 })
         );
         node.position.copy(position);
-        const halo = new THREE.Sprite(
-          new THREE.SpriteMaterial({
-            map: textures.glow,
-            color: 0xffffff,
-            transparent: true,
-            depthWrite: false,
-            blending: THREE.AdditiveBlending,
-            opacity: 0.24,
-          })
-        );
-        halo.scale.set(9, 9, 1);
-        node.add(halo);
+          const halo = createBillboardCircle(textures.glow, 8, { additive: true, opacity: 0.2 });
+          node.add(halo);
         sessionTraceGroup.add(node);
 
         const nodeId = `session-node-${traceNodeCounter++}`;
@@ -2037,6 +2051,41 @@
           sample.disturbance = clamp01(sample.disturbance + interactionBoost * 0.12);
         }
 
+        // If hands are present, bias the presence toward the hands,
+        // calm the global disturbance and slow down motion to make interactions more gentle.
+        if (sample.handCount > 0) {
+          // compute average hand world position if both hands available
+          const handCenter = new THREE.Vector3();
+          let handsFound = 0;
+          if (sample.leftHandPosition && sample.leftHandPosition.lengthSq() > 0) {
+            handCenter.add(sample.leftHandPosition);
+            handsFound++;
+          }
+          if (sample.rightHandPosition && sample.rightHandPosition.lengthSq() > 0) {
+            handCenter.add(sample.rightHandPosition);
+            handsFound++;
+          }
+          if (handsFound > 0) {
+            handCenter.multiplyScalar(1 / handsFound);
+
+            // make presence follow the hands more strongly
+            smoothedPresence.lerp(handCenter, 0.28);
+            presenceGroup.position.copy(smoothedPresence);
+            presenceGroup.visible = true;
+
+            // deposit memory along the hand path with modest intensity
+            memoryField.recordPresence(handCenter, 0.12 + clamp01(sample.handSpread || 0) * 0.28);
+
+            // calm the disturbance and slow the target speed so the network becomes less jittery
+            motionState.disturbance = THREE.MathUtils.lerp(motionState.disturbance, motionState.disturbance * 0.45, 0.28);
+            motionState.targetSpeed = THREE.MathUtils.lerp(motionState.targetSpeed, motionState.targetSpeed * 0.38, 0.28);
+
+            // visually reduce aggressive motion/glow while hands guide the system
+            settings.drift = THREE.MathUtils.lerp(settings.drift, Math.max(0.02, settings.drift * 0.45), 0.12);
+            settings.networkOpen = THREE.MathUtils.lerp(settings.networkOpen, Math.max(0.06, settings.networkOpen * 0.6), 0.08);
+          }
+        }
+
         motionState.speed = THREE.MathUtils.lerp(motionState.speed, sample.speed, 0.16);
         motionState.targetSpeed = sample.speed;
         motionState.disturbance = clamp01(Math.max(motionState.disturbance, motionState.disturbanceMemory, sample.disturbance));
@@ -2044,11 +2093,11 @@
         motionState.idleTime = sample.stillness ? motionState.idleTime + 0.016 : 0;
 
         smoothedPresence.lerp(sample.worldPosition, 0.12);
-        presenceOrb.position.copy(smoothedPresence);
-        presenceOrb.visible = sample.presenceDetected || sample.disturbance > 0.01;
-        presenceOrb.scale.setScalar(1 + sample.faceScale * 3.5 + sample.disturbance * 2.2);
-        presenceOrb.material.opacity = sample.presenceDetected ? 0.14 + sample.disturbance * 0.38 : 0.02 + sample.disturbance * 0.08;
-        presenceHalo.material.opacity = sample.presenceDetected ? 0.18 + sample.disturbance * 0.45 : 0.05;
+        presenceGroup.position.copy(smoothedPresence);
+        presenceGroup.visible = sample.presenceDetected || sample.disturbance > 0.01;
+        presenceGroup.scale.setScalar(1 + sample.faceScale * 3.5 + sample.disturbance * 2.2);
+        presenceHalo.material.opacity = sample.presenceDetected ? 0.14 + sample.disturbance * 0.38 : 0.02 + sample.disturbance * 0.08;
+        presenceHalo.material.opacity = Math.max(presenceHalo.material.opacity, sample.presenceDetected ? 0.18 + sample.disturbance * 0.45 : 0.05);
         presenceHalo.scale.setScalar(8 + sample.disturbance * 22);
         faceShell.material.side = THREE.DoubleSide;
 
@@ -2093,7 +2142,43 @@
           webcamTracker.initialized = true;
           soundEngine.setArchiveTraces(traceArchive.traces);
           startHint.style.display = "none";
+          // remove fallback UI if present
+          const btnContainer = document.getElementById("startButtonsContainer");
+          if (btnContainer) btnContainer.remove();
         } catch (error) {
+          webcamTracker.initialized = false;
+          webcamTracker.running = false;
+          currentTrace = null;
+          startHint.textContent = "webcam permission needed";
+        }
+      }
+
+      // Attempt to auto-start webcam tracking on load. Audio may require a user gesture; if so,
+      // keep the existing pointerdown fallback to start audio when the user interacts.
+      async function autoInit() {
+        if (webcamTracker.initialized) return;
+        startHint.textContent = "initializing...";
+        currentTrace = new PresenceTrace();
+        webcamTracker.onUpdate = syncWebcamState;
+
+        try {
+          // Start webcam/tracking immediately
+          await webcamTracker.start();
+          webcamTracker.initialized = true;
+          startHint.textContent = "webcam active";
+          // remove fallback UI when autoInit succeeds
+          const btnContainer2 = document.getElementById("startButtonsContainer");
+          if (btnContainer2) btnContainer2.remove();
+          // Try starting audio but don't fail initialization if blocked by browser
+          try {
+            await soundEngine.start();
+            soundEngine.setArchiveTraces(traceArchive.traces);
+            startHint.style.display = "none";
+          } catch (audioErr) {
+            // Audio requires user gesture — show hint and leave pointerdown as fallback
+            startHint.textContent = "tap to enable audio";
+          }
+        } catch (err) {
           webcamTracker.initialized = false;
           webcamTracker.running = false;
           currentTrace = null;
@@ -2336,11 +2421,11 @@
         soundEngine.update(motionState, memoryDensity, dt);
         controls.update();
 
-        presenceOrb.position.copy(smoothedPresence);
-        presenceOrb.visible = webcamTracker.initialized && (webcamState.presenceDetected || motionState.disturbance > 0.01);
-        presenceOrb.scale.setScalar(1.2 + motionState.disturbance * 3.2);
-        presenceOrb.material.opacity = webcamTracker.initialized ? 0.08 + motionState.disturbance * 0.34 : 0.0;
-        presenceHalo.material.opacity = webcamTracker.initialized ? 0.12 + motionState.disturbance * 0.4 : 0.0;
+        presenceGroup.position.copy(smoothedPresence);
+        presenceGroup.visible = webcamTracker.initialized && (webcamState.presenceDetected || motionState.disturbance > 0.01);
+        presenceGroup.scale.setScalar(1.2 + motionState.disturbance * 3.2);
+        presenceHalo.material.opacity = webcamTracker.initialized ? 0.08 + motionState.disturbance * 0.34 : 0.0;
+        presenceHalo.material.opacity = Math.max(presenceHalo.material.opacity, webcamTracker.initialized ? 0.12 + motionState.disturbance * 0.4 : 0.0);
         presenceHalo.scale.setScalar(8 + motionState.disturbance * 18);
 
         backdrop.material.opacity = 0.98;
@@ -2352,10 +2437,93 @@
           ? `disturbance ${motionState.disturbance.toFixed(2)} / density ${memoryDensity.toFixed(2)} / traces ${memoryField.samples} / pulses ${pulses.length}`
           : "awaiting webcam permission";
 
+        // orient circular billboards to face the camera (sprite-like behaviour)
+        for (let i = 0; i < billboards.length; i++) {
+          const b = billboards[i];
+          if (b && b.userData && b.userData.isBillboard) b.quaternion.copy(camera.quaternion);
+        }
+
         renderer.render(scene, camera);
       }
 
       window.addEventListener("pointerdown", startExperience, { passive: true });
+
+      // Kick off automatic initialization (webcam + try audio)
+      autoInit();
+
+      // Create a visible start button as fallback when automatic init is blocked.
+      function ensureStartButton() {
+        if (document.getElementById("startWebcamBtn") || document.getElementById("startAudioBtn")) return;
+
+        const container = document.createElement("div");
+        container.id = "startButtonsContainer";
+        container.style.position = "fixed";
+        container.style.right = "18px";
+        container.style.bottom = "18px";
+        container.style.display = "flex";
+        container.style.flexDirection = "column";
+        container.style.gap = "8px";
+        container.style.zIndex = 9999;
+
+        const camBtn = document.createElement("button");
+        camBtn.id = "startWebcamBtn";
+        camBtn.textContent = "Avvia Webcam";
+        camBtn.style.padding = "10px 14px";
+        camBtn.style.background = "rgba(255,255,255,0.06)";
+        camBtn.style.color = "#fff";
+        camBtn.style.border = "1px solid rgba(255,255,255,0.12)";
+        camBtn.style.borderRadius = "6px";
+        camBtn.style.backdropFilter = "blur(4px)";
+        camBtn.style.cursor = "pointer";
+        camBtn.addEventListener("click", async () => {
+          startHint.textContent = "starting webcam...";
+          try {
+            await webcamTracker.start();
+            webcamTracker.initialized = true;
+            startHint.textContent = "webcam active";
+            camBtn.style.display = "none";
+          } catch (err) {
+            console.error("webcam start failed", err);
+            startHint.textContent = "webcam permission needed (check console)";
+          }
+        });
+
+        const audioBtn = document.createElement("button");
+        audioBtn.id = "startAudioBtn";
+        audioBtn.textContent = "Abilita Audio";
+        audioBtn.style.padding = "10px 14px";
+        audioBtn.style.background = "rgba(255,255,255,0.06)";
+        audioBtn.style.color = "#fff";
+        audioBtn.style.border = "1px solid rgba(255,255,255,0.12)";
+        audioBtn.style.borderRadius = "6px";
+        audioBtn.style.backdropFilter = "blur(4px)";
+        audioBtn.style.cursor = "pointer";
+        audioBtn.addEventListener("click", async () => {
+          startHint.textContent = "enabling audio...";
+          try {
+            await soundEngine.start();
+            soundEngine.setArchiveTraces(traceArchive.traces);
+            startHint.textContent = "audio active";
+            audioBtn.style.display = "none";
+          } catch (err) {
+            console.error("audio start failed", err);
+            startHint.textContent = "audio blocked (click page or allow audio)";
+          }
+        });
+
+        container.appendChild(camBtn);
+        container.appendChild(audioBtn);
+        document.body.appendChild(container);
+      }
+
+      // Ensure start buttons are available immediately as a visible fallback
+      ensureStartButton();
+      // Also set a friendly hint if webcam hasn't initialized within a short delay
+      setTimeout(() => {
+        if (!webcamTracker.initialized) {
+          startHint.textContent = "click Avvia Webcam per consentire la videocamera";
+        }
+      }, 800);
       window.addEventListener("resize", () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
@@ -2373,6 +2541,6 @@
       });
 
       smoothedPresence.set(0, 0, 0);
-      presenceOrb.position.copy(smoothedPresence);
+      presenceGroup.position.copy(smoothedPresence);
 
       animate();
