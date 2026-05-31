@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Root Network / Invisible Presence</title>
+    <style>
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #000;
+        color: #f4f4f0;
+        font-family: Consolas, "SFMono-Regular", Menlo, Monaco, monospace;
+      }
+
+      canvas {
+        display: block;
+      }
+
+      #ui {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 10;
+      }
+
+      .hud {
+        position: absolute;
+        left: 16px;
+        top: 14px;
+        max-width: min(420px, calc(100vw - 32px));
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        font-size: 11px;
+        line-height: 1.5;
+        color: rgba(255, 255, 255, 0.82);
+        text-shadow: 0 0 8px rgba(255, 255, 255, 0.1);
+      }
+
+      .hud .title {
+        font-size: 12px;
+        letter-spacing: 0.22em;
+        color: rgba(255, 255, 255, 0.96);
+        margin-bottom: 6px;
+      }
+
+      .hud .meta {
+        color: rgba(255, 255, 255, 0.6);
+      }
+
+      .corner {
+        position: absolute;
+        right: 16px;
+        bottom: 14px;
+        text-align: right;
+        max-width: min(400px, calc(100vw - 32px));
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        font-size: 10px;
+        line-height: 1.55;
+        color: rgba(255, 255, 255, 0.74);
+      }
+
+      .corner strong {
+        color: rgba(255, 255, 255, 0.94);
+        font-weight: 600;
+      }
+
+      #startHint {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        padding: 12px 16px;
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        background: rgba(0, 0, 0, 0.34);
+        color: rgba(255, 255, 255, 0.88);
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        font-size: 11px;
+        backdrop-filter: blur(6px);
+      }
+
+      #stats {
+        position: absolute;
+        left: 16px;
+        bottom: 14px;
+        font-size: 10px;
+        line-height: 1.5;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.6);
+      }
+
+      .gui-wrap {
+        position: absolute;
+        right: 12px;
+        top: 12px;
+        pointer-events: auto;
+        opacity: 0.84;
+      }
+
+      .glitch {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: repeating-linear-gradient(
+          to bottom,
+          rgba(255, 255, 255, 0.012),
+          rgba(255, 255, 255, 0.012) 1px,
+          transparent 1px,
+          transparent 3px
+        );
+        mix-blend-mode: screen;
+        opacity: 0.16;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="ui">
+      <div class="hud">
+        <div class="title">Root Network / Invisible Presence</div>
+        <div>Move slowly to open the network.</div>
+        <div class="meta">Fast motion disturbs the field. Stillness thickens memory.</div>
+      </div>
+      <div class="corner">
+        <strong>OrbitControls</strong> rotate / zoom / pan<br />
+        click to start audio<br />
+        labels mark residual nodes
+      </div>
+      <div id="startHint">click to activate sound</div>
+      <div id="stats">idle signal pending</div>
+      <div class="glitch"></div>
+      <div class="gui-wrap" id="gui-wrap"></div>
+    </div>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+      import GUI from "https://cdn.jsdelivr.net/npm/lil-gui@0.19/+esm";
+      import * as Tone from "https://cdn.jsdelivr.net/npm/tone@14.8.49/+esm";
+
+      const settings = {
+        nodeCount: 150,
+        connectionLimit: 3,
+        connectionDistance: 96,
+        bundleCount: 2,
+        pulseRate: 0.18,
+        glowBoost: 0.78,
+        networkOpen: 0.38,
+        drift: 0.22,
+        filamentNoise: 0.28,
+        terrainDensity: 4200,
+        terrainAmplitude: 15,
+        particleCount: 2200,
+        memoryBias: 0.5,
+        audioDepth: 0.5,
+        autoOrbit: 0.13,
+      };
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x000000);
+      scene.fog = new THREE.Fog(0x000000, 160, 760);
+
+      const camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.1, 2000);
+      camera.position.set(0, 78, 285);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.setClearColor(0x000000, 1);
+      renderer.domElement.style.touchAction = "none";
+      document.body.appendChild(renderer.domElement);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.045;
+      controls.enablePan = true;
+      controls.enableZoom = true;
+      controls.enableRotate = true;
+      controls.autoRotate = true;
+      controls.autoRotateSpeed = settings.autoOrbit;
+      controls.minDistance = 70;
+      controls.maxDistance = 620;
+      controls.target.set(0, 0, 0);
+
+      const raycaster = new THREE.Raycaster();
+      const mouse = new THREE.Vector2();
+      const presencePoint = new THREE.Vector3();
+      const smoothedPresence = new THREE.Vector3();
+      const presencePlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+      const clock = new THREE.Clock();
+      const uiStats = document.getElementById("stats");
+      const startHint = document.getElementById("startHint");
+
+      const tmpVecA = new THREE.Vector3();
+      const tmpVecB = new THREE.Vector3();
+      const tmpVecC = new THREE.Vector3();
+      const tmpVecD = new THREE.Vector3();
+      const tmpColor = new THREE.Color();
+      const upVector = new THREE.Vector3(0, 1, 0);
+      const rightVector = new THREE.Vector3(1, 0, 0);
+
+      function clamp01(value) {
+        return Math.min(1, Math.max(0, value));
+      }
+
+      function lerpRange(value, inMin, inMax, outMin, outMax) {
+        const t = clamp01((value - inMin) / (inMax - inMin));
+        return outMin + (outMax - outMin) * t;
+      }
+
+      function pseudoNoise(x, y, z) {
+        const n = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453;
+        return n - Math.floor(n);
+      }
+
+      function layeredNoise(x, y, z, t) {
+        const a = pseudoNoise(x + t * 0.7, y, z);
+        const b = pseudoNoise(x * 1.9, y + t * 0.45, z * 1.7);
+        const c = pseudoNoise(x * 0.8, y * 1.6, z + t * 0.3);
+        return a * 0.52 + b * 0.31 + c * 0.17;
+      }
+
+      function createRadialTexture(inner = 0.12, outer = 1) {
+        const size = 128;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        const gradient = ctx.createRadialGradient(size * 0.5, size * 0.5, size * inner, size * 0.5, size * 0.5, size * outer * size * 0.5);
+        gradient.addColorStop(0, "rgba(255,255,255,1)");
+        gradient.addColorStop(0.18, "rgba(255,255,255,0.9)");
+        gradient.addColorStop(0.45, "rgba(255,255,255,0.28)");
+        gradient.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, size, size);
+        return new THREE.CanvasTexture(canvas);
+      }
+
+      function createSquareTexture() {
+        const size = 64;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, size, size);
+        ctx.strokeStyle = "rgba(255,255,255,0.95)";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(10, 10, size - 20, size - 20);
+        ctx.fillStyle = "rgba(255,255,255,0.22)";
+        ctx.fillRect(18, 18, size - 36, size - 36);
+        return new THREE.CanvasTexture(canvas);
+      }
+
+      function createLabelTexture(text) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 512;
+        canvas.height = 128;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "rgba(0,0,0,0.25)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = "rgba(255,255,255,0.35)";
+        ctx.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
+        ctx.fillStyle = "rgba(255,255,255,0.92)";
+        ctx.font = "28px Consolas, monospace";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, 26, 64);
+        return new THREE.CanvasTexture(canvas);
+      }
+
+      const textures = {
+        glow: createRadialTexture(0.04, 1),
+        label: createLabelTexture("NODE // MEMORY TRACE"),
+        marker: createSquareTexture(),
+      };
+
+      class MemoryField {
+        constructor(volume = 420) {
+          this.volume = volume;
+          this.traces = [];
+          this.samples = 0;
+          this.globalDensity = 0;
+          this.maxTraces = 520;
+          this.traceGeometry = new THREE.BufferGeometry();
+          this.tracePositions = new Float32Array(this.maxTraces * 3);
+          this.traceColors = new Float32Array(this.maxTraces * 3);
+          this.traceGeometry.setAttribute("position", new THREE.BufferAttribute(this.tracePositions, 3));
+          this.traceGeometry.setAttribute("color", new THREE.BufferAttribute(this.traceColors, 3));
+          this.traceMaterial = new THREE.PointsMaterial({
+            size: 1.1,
+            transparent: true,
+            opacity: 0.85,
+            depthWrite: false,
+            vertexColors: true,
+            map: textures.glow,
+            blending: THREE.AdditiveBlending,
+          });
+          this.points = new THREE.Points(this.traceGeometry, this.traceMaterial);
+          this.points.frustumCulled = false;
+          this.grid = new Float32Array(24 * 12 * 24);
+        }
+
+        recordPresence(position, intensity = 1) {
+          this.traces.push({
+            position: position.clone(),
+            age: 0,
+            life: 12 + intensity * 16,
+            strength: intensity,
+            radius: 10 + intensity * 28,
+          });
+
+          const x = Math.floor(THREE.MathUtils.mapLinear(position.x, -this.volume, this.volume, 0, 23));
+          const y = Math.floor(THREE.MathUtils.mapLinear(position.y, -this.volume * 0.5, this.volume * 0.5, 0, 11));
+          const z = Math.floor(THREE.MathUtils.mapLinear(position.z, -this.volume, this.volume, 0, 23));
+          const index = this._gridIndex(x, y, z);
+          if (index >= 0) {
+            this.grid[index] = Math.min(1, this.grid[index] + intensity * 0.24);
+          }
+
+          if (this.traces.length > this.maxTraces) {
+            this.traces.splice(0, this.traces.length - this.maxTraces);
+          }
+        }
+
+        sample(position) {
+          let density = 0;
+
+          for (let i = this.traces.length - 1; i >= 0; i--) {
+            const trace = this.traces[i];
+            const distance = trace.position.distanceTo(position);
+            const falloff = clamp01(1 - distance / trace.radius);
+            density += falloff * falloff * trace.strength;
+          }
+
+          const x = Math.floor(THREE.MathUtils.mapLinear(position.x, -this.volume, this.volume, 0, 23));
+          const y = Math.floor(THREE.MathUtils.mapLinear(position.y, -this.volume * 0.5, this.volume * 0.5, 0, 11));
+          const z = Math.floor(THREE.MathUtils.mapLinear(position.z, -this.volume, this.volume, 0, 23));
+          const index = this._gridIndex(x, y, z);
+          if (index >= 0) {
+            density += this.grid[index] * 0.5;
+          }
+
+          return density;
+        }
+
+        update(dt) {
+          let active = 0;
+          let totalDensity = 0;
+
+          for (let i = this.traces.length - 1; i >= 0; i--) {
+            const trace = this.traces[i];
+            trace.age += dt;
+            trace.position.y += Math.sin(trace.age * 1.6 + trace.position.x * 0.02) * dt * 0.35;
+            trace.position.x += Math.cos(trace.age * 1.2 + trace.position.z * 0.02) * dt * 0.18;
+            trace.position.z += Math.sin(trace.age * 1.3 + trace.position.x * 0.015) * dt * 0.2;
+            trace.strength *= Math.max(0.985, 1 - dt * 0.02);
+
+            if (trace.age > trace.life || trace.strength < 0.01) {
+              this.traces.splice(i, 1);
+            } else {
+              active++;
+              totalDensity += trace.strength;
+            }
+          }
+
+          for (let i = 0; i < this.grid.length; i++) {
+            this.grid[i] *= Math.max(0.996, 1 - dt * 0.007);
+          }
+
+          this.globalDensity = active > 0 ? totalDensity / active : this.globalDensity * 0.995;
+
+          const positions = this.traceGeometry.attributes.position.array;
+          const colors = this.traceGeometry.attributes.color.array;
+          let cursor = 0;
+
+          for (; cursor < this.traces.length && cursor < this.maxTraces; cursor++) {
+            const trace = this.traces[cursor];
+            positions[cursor * 3] = trace.position.x;
+            positions[cursor * 3 + 1] = trace.position.y;
+            positions[cursor * 3 + 2] = trace.position.z;
+            const brightness = clamp01(0.35 + trace.strength * 0.85);
+            colors[cursor * 3] = brightness;
+            colors[cursor * 3 + 1] = brightness;
+            colors[cursor * 3 + 2] = brightness;
+          }
+
+          for (; cursor < this.maxTraces; cursor++) {
+            positions[cursor * 3] = 9999;
+            positions[cursor * 3 + 1] = 9999;
+            positions[cursor * 3 + 2] = 9999;
+            colors[cursor * 3] = 0;
+            colors[cursor * 3 + 1] = 0;
+            colors[cursor * 3 + 2] = 0;
+          }
+
+          this.traceGeometry.attributes.position.needsUpdate = true;
+          this.traceGeometry.attributes.color.needsUpdate = true;
+          this.samples = active;
+        }
+
+        _gridIndex(x, y, z) {
+          if (x < 0 || x > 23 || y < 0 || y > 11 || z < 0 || z > 23) {
+            return -1;
+          }
+          return x + y * 24 + z * 24 * 12;
+        }
+      }
+
+      class Node3D {
+        constructor(index, basePosition, textureSet) {
+          this.index = index;
+          this.basePosition = basePosition.clone();
+          this.position = basePosition.clone();
+          this.velocity = new THREE.Vector3();
+          this.memory = 0.12 + Math.random() * 0.25;
+          this.affinity = Math.random();
+          this.energy = 0.25 + Math.random() * 0.35;
+          this.visits = 0;
+          this.seed = Math.random() * 1000;
+          this.reactionDelay = 0;
+          this.reactionPulse = 0;
+          this.labelActive = index % 12 === 0;
+          this.group = new THREE.Group();
+
+          const geometry = Math.random() > 0.45 ? new THREE.BoxGeometry(1.8, 1.8, 1.8) : new THREE.SphereGeometry(1.15, 8, 8);
+          this.body = new THREE.Mesh(
+            geometry,
+            new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 })
+          );
+          this.group.add(this.body);
+
+          this.glow = new THREE.Sprite(
+            new THREE.SpriteMaterial({
+              map: textureSet.glow,
+              color: 0xffffff,
+              transparent: true,
+              depthWrite: false,
+              blending: THREE.AdditiveBlending,
+              opacity: 0.14,
+            })
+          );
+          this.glow.scale.set(12, 12, 1);
+          this.group.add(this.glow);
+
+          this.marker = new THREE.Sprite(
+            new THREE.SpriteMaterial({
+              map: textureSet.marker,
+              color: 0xffffff,
+              transparent: true,
+              depthWrite: false,
+              opacity: 0.45,
+            })
+          );
+          this.marker.scale.set(3.8, 3.8, 1);
+          this.marker.position.set(0, 2.4, 0);
+          this.group.add(this.marker);
+
+          this.label = null;
+          if (this.labelActive) {
+            const labelTexture = createLabelTexture(`N-${String(index).padStart(3, "0")} // TRACE`);
+            this.label = new THREE.Sprite(
+              new THREE.SpriteMaterial({
+                map: labelTexture,
+                transparent: true,
+                depthWrite: false,
+                color: 0xffffff,
+              })
+            );
+            this.label.scale.set(16, 4, 1);
+            this.label.position.set(8, 5.5, 0);
+            this.group.add(this.label);
+          }
+
+          this.group.position.copy(this.position);
+        }
+
+        update(dt, presence, motionState, memoryField, time) {
+          const calm = clamp01(1 - motionState.speed * 0.9);
+          const speed = motionState.speed;
+          const density = memoryField.sample(this.position);
+          const toPresence = tmpVecA.copy(presence).sub(this.position);
+          const presenceDistance = toPresence.length();
+          const influenceRadius = lerpRange(calm, 0, 1, 70, 180);
+          const tracePull = clamp01(1 - presenceDistance / influenceRadius);
+          const localNoise = layeredNoise(this.basePosition.x * 0.02, this.basePosition.y * 0.02, this.basePosition.z * 0.02, time + this.seed);
+
+          tmpVecB.copy(this.basePosition);
+          tmpVecB.x += Math.sin(time * 0.9 + this.seed) * 4.5;
+          tmpVecB.y += Math.cos(time * 0.8 + this.seed * 1.3) * 3.2;
+          tmpVecB.z += Math.sin(time * 0.7 + this.seed * 0.9) * 4.5;
+
+          if (tracePull > 0) {
+            const pulse = tracePull * (1.2 + this.memory * 1.8);
+            tmpVecB.add(toPresence.normalize().multiplyScalar(22 * pulse));
+            this.visits += dt * pulse;
+            this.memory = THREE.MathUtils.lerp(this.memory, clamp01(0.2 + density * 0.4 + pulse * 0.55), 0.04);
+            this.energy = THREE.MathUtils.lerp(this.energy, clamp01(0.35 + pulse + density * 0.3), 0.05);
+            this.reactionDelay = Math.max(this.reactionDelay, 0.2 + presenceDistance * 0.0018);
+            this.reactionPulse = Math.min(1, this.reactionPulse + pulse * 0.08);
+
+            if (presenceDistance < 42 && density > 0.1) {
+              memoryField.recordPresence(this.position, 0.6 + pulse * 0.8);
+            }
+          } else {
+            this.memory = THREE.MathUtils.lerp(this.memory, clamp01(0.08 + density * 0.3), 0.015);
+            this.energy = THREE.MathUtils.lerp(this.energy, clamp01(0.2 + density * 0.22), 0.02);
+          }
+
+          if (this.reactionDelay > 0) {
+            this.reactionDelay -= dt;
+            if (this.reactionDelay <= 0) {
+              this.reactionPulse = 1;
+            }
+          }
+
+          const slowDrift = 1 + settings.drift;
+          this.velocity.x += (tmpVecB.x - this.position.x) * 0.016 * slowDrift;
+          this.velocity.y += (tmpVecB.y - this.position.y) * 0.016 * slowDrift;
+          this.velocity.z += (tmpVecB.z - this.position.z) * 0.016 * slowDrift;
+
+          const disturbance = speed * 0.5;
+          this.velocity.x += Math.sin(time * 4 + this.seed) * 0.02 * disturbance;
+          this.velocity.y += Math.cos(time * 3.5 + this.seed * 1.4) * 0.02 * disturbance;
+          this.velocity.z += Math.sin(time * 3.1 + this.seed * 0.7) * 0.02 * disturbance;
+
+          this.position.addScaledVector(this.velocity, dt * 55);
+          this.velocity.multiplyScalar(0.92);
+
+          this.position.x += Math.sin(time * 1.7 + this.seed) * 0.14 * localNoise;
+          this.position.y += Math.cos(time * 1.4 + this.seed * 1.3) * 0.12 * localNoise;
+          this.position.z += Math.sin(time * 1.2 + this.seed * 0.8) * 0.14 * localNoise;
+
+          const maxRadius = 120 + this.memory * 36;
+          this.position.x = THREE.MathUtils.clamp(this.position.x, -maxRadius, maxRadius);
+          this.position.y = THREE.MathUtils.clamp(this.position.y, -maxRadius * 0.7, maxRadius * 0.7);
+          this.position.z = THREE.MathUtils.clamp(this.position.z, -maxRadius, maxRadius);
+
+          this.group.position.copy(this.position);
+          this.group.rotation.x = Math.sin(time * 0.4 + this.seed) * 0.12;
+          this.group.rotation.y = Math.cos(time * 0.3 + this.seed) * 0.15;
+          this.group.rotation.z = Math.sin(time * 0.25 + this.seed * 0.7) * 0.08;
+
+          const glowScale = 9 + this.memory * 18 + this.energy * 10 + this.reactionPulse * 11 + settings.glowBoost * 3;
+          this.glow.scale.set(glowScale, glowScale, 1);
+          this.glow.material.opacity = clamp01(0.05 + this.memory * 0.2 + this.reactionPulse * 0.22);
+          this.marker.material.opacity = clamp01(0.08 + this.energy * 0.42 + this.memory * 0.3);
+          this.body.material.opacity = clamp01(0.28 + this.memory * 0.34 + this.reactionPulse * 0.12);
+          this.body.scale.setScalar(0.82 + this.memory * 0.52 + this.reactionPulse * 0.28);
+
+          if (this.label) {
+            this.label.material.opacity = clamp01(0.2 + this.memory * 0.8);
+            this.label.position.x = 7 + this.reactionPulse * 2;
+            this.label.position.y = 5 + this.memory * 2.2;
+          }
+
+          if (this.reactionPulse > 0) {
+            this.reactionPulse = Math.max(0, this.reactionPulse - dt * 0.5);
+          }
+        }
+      }
+
+      class Connection3D {
+        constructor(nodeA, nodeB, bundleIndex, bundleCount) {
+          this.nodeA = nodeA;
+          this.nodeB = nodeB;
+          this.bundleIndex = bundleIndex;
+          this.bundleCount = bundleCount;
+          this.baseStrength = 0;
+          this.memoryAffinity = 0;
+          this.active = true;
+          this.curve = new THREE.CatmullRomCurve3([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]);
+          this.segments = 32;
+          this.points = new Float32Array((this.segments + 1) * 3);
+
+          const geometry = new THREE.BufferGeometry();
+          geometry.setAttribute("position", new THREE.BufferAttribute(this.points, 3));
+
+          const opacity = bundleIndex === 0 ? 0.15 : 0.055;
+          const width = bundleIndex === 0 ? 1.2 : 0.6;
+          this.material = new THREE.LineBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity,
+            depthWrite: false,
+          });
+          this.line = new THREE.Line(geometry, this.material);
+          this.line.frustumCulled = false;
+          this.width = width;
+          this.phase = Math.random() * 10;
+        }
+
+        update(time, motionState, memoryField, presence) {
+          const a = this.nodeA.position;
+          const b = this.nodeB.position;
+          const distance = a.distanceTo(b);
+          const memoryA = this.nodeA.memory;
+          const memoryB = this.nodeB.memory;
+          const affinity = 1 - clamp01(distance / settings.connectionDistance);
+          this.memoryAffinity = (memoryA + memoryB) * 0.45 + memoryField.sample(tmpVecC.copy(a).add(b).multiplyScalar(0.5)) * 0.3;
+          this.baseStrength = clamp01(affinity * 0.7 + this.memoryAffinity * 0.7);
+
+          const presenceDistance = presence.distanceTo(tmpVecD.copy(a).add(b).multiplyScalar(0.5));
+          const presenceOpen = clamp01(1 - presenceDistance / 200);
+          const motionNoise = motionState.speed * 0.22;
+          const calm = clamp01(1 - motionState.speed * 0.8);
+          const driftTowardPresence = motionState.idleTime > 1.2 ? (motionState.idleTime - 1.2) * 2.2 : 0;
+          const midpoint = tmpVecA.copy(a).add(b).multiplyScalar(0.5);
+
+          for (let bundle = 0; bundle < this.bundleCount; bundle++) {
+            const curveOffset = (bundle - (this.bundleCount - 1) * 0.5) * 2.8;
+            const side = tmpVecB.copy(b).sub(a).normalize();
+            const normal = tmpVecC.copy(side).cross(upVector).normalize();
+            if (normal.lengthSq() < 0.001) {
+              normal.copy(rightVector);
+            }
+
+            const sag = 8 + distance * 0.04 + Math.sin(time * 0.9 + this.phase + bundle) * 3;
+            const pulseWarp = layeredNoise(a.x * 0.03 + bundle, a.y * 0.02, b.z * 0.03, time + this.phase) - 0.5;
+            const opening = settings.networkOpen * 1.8 + calm * 0.9 + presenceOpen * 0.9;
+            const control1 = midpoint.clone()
+              .addScaledVector(normal, curveOffset + pulseWarp * 10 * settings.filamentNoise)
+              .addScaledVector(side, -sag * 0.45 * opening)
+              .addScaledVector(presence, driftTowardPresence * 0.25 * (1 - bundle * 0.18));
+            const control2 = midpoint.clone()
+              .addScaledVector(normal, -(curveOffset + pulseWarp * 10 * settings.filamentNoise))
+              .addScaledVector(side, sag * 0.45 * opening)
+              .addScaledVector(presence, driftTowardPresence * 0.18 * (1 - bundle * 0.18));
+
+            if (this.bundleIndex === bundle) {
+              this.curve.points = [a.clone(), control1.clone(), control2.clone(), b.clone()];
+              const sampled = this.curve.getPoints(this.segments);
+
+              for (let i = 0; i < sampled.length; i++) {
+                const point = sampled[i];
+                this.points[i * 3] = point.x;
+                this.points[i * 3 + 1] = point.y;
+                this.points[i * 3 + 2] = point.z;
+              }
+
+              this.line.geometry.attributes.position.needsUpdate = true;
+            }
+          }
+
+          const alpha = clamp01(0.05 + this.baseStrength * 0.78 + settings.networkOpen * 0.14 + motionNoise);
+          this.material.opacity = this.bundleIndex === 0 ? alpha * 0.72 : alpha * 0.28;
+          this.line.scale.setScalar(1 + this.memoryAffinity * 0.08);
+          this.line.material.linewidth = this.width;
+        }
+
+        getPulseCurve() {
+          const a = this.nodeA.position;
+          const b = this.nodeB.position;
+          const midpoint = a.clone().add(b).multiplyScalar(0.5);
+          return new THREE.CatmullRomCurve3([
+            a.clone(),
+            a.clone().lerp(midpoint, 0.35).addScalar(0.01),
+            midpoint,
+            midpoint.clone().lerp(b, 0.65).addScalar(0.01),
+            b.clone(),
+          ]);
+        }
+      }
+
+      class Pulse3D {
+        constructor(connection, soundEngine) {
+          this.connection = connection;
+          this.curve = connection.getPulseCurve();
+          this.progress = Math.random() * 0.2;
+          this.speed = 0.08 + Math.random() * 0.18;
+          this.life = 0;
+          this.maxLife = 9 + Math.random() * 8;
+          this.soundEngine = soundEngine;
+          this.mesh = new THREE.Mesh(
+            new THREE.SphereGeometry(0.85, 10, 10),
+            new THREE.MeshBasicMaterial({
+              color: 0xffffff,
+              transparent: true,
+              opacity: 0.95,
+              depthWrite: false,
+            })
+          );
+          this.halo = new THREE.Sprite(
+            new THREE.SpriteMaterial({
+              map: textures.glow,
+              color: 0xffffff,
+              transparent: true,
+              depthWrite: false,
+              blending: THREE.AdditiveBlending,
+              opacity: 0.68,
+            })
+          );
+          this.halo.scale.set(6.5, 6.5, 1);
+          this.mesh.add(this.halo);
+          this.soundEngine.emitPing(0.4 + this.connection.baseStrength * 0.5);
+        }
+
+        update(dt, time) {
+          this.life += dt;
+          this.progress += dt * this.speed;
+          const point = this.curve.getPointAt(clamp01(this.progress));
+          this.mesh.position.copy(point);
+          const pulseScale = 1 + Math.sin(time * 10 + this.life * 2.5) * 0.06;
+          this.mesh.scale.setScalar(1 + this.connection.baseStrength * 0.28);
+          this.halo.scale.setScalar(6 + this.connection.baseStrength * 4.5 * pulseScale);
+          this.mesh.material.opacity = clamp01(0.7 + this.connection.baseStrength * 0.3);
+          return this.progress >= 1 || this.life > this.maxLife;
+        }
+      }
+
+      class SoundEngine {
+        constructor() {
+          this.started = false;
+          this.ready = false;
+          this.motion = 0;
+          this.memoryDensity = 0;
+          this.noiseAmount = 0;
+          this.wetness = 0.35;
+          this.reverb = null;
+          this.filter = null;
+          this.droneGain = null;
+          this.noiseGain = null;
+          this.droneOscillators = [];
+          this.pingSynth = null;
+          this.glitchSynth = null;
+        }
+
+        async start() {
+          if (this.started) {
+            return;
+          }
+          this.started = true;
+          await Tone.start();
+
+          this.reverb = new Tone.Reverb({ decay: 11, preDelay: 0.06, wet: 0.35 });
+          await this.reverb.generate();
+
+          this.filter = new Tone.Filter({ frequency: 120, type: "lowpass", rolloff: -24 });
+          this.droneGain = new Tone.Gain(0.14);
+          this.noiseGain = new Tone.Gain(0.0);
+
+          this.filter.chain(this.droneGain, this.reverb, Tone.Destination);
+          this.noiseGain.chain(this.reverb, Tone.Destination);
+
+          const droneFrequencies = [24, 36, 48.5];
+          for (let i = 0; i < droneFrequencies.length; i++) {
+            const osc = new Tone.Oscillator({
+              frequency: droneFrequencies[i],
+              type: i === 1 ? "triangle" : "sine",
+              volume: -18,
+            }).connect(this.filter);
+            osc.start();
+            this.droneOscillators.push(osc);
+          }
+
+          this.pingSynth = new Tone.MembraneSynth({
+            pitchDecay: 0.012,
+            octaves: 6,
+            oscillator: { type: "sine" },
+            envelope: { attack: 0.001, decay: 0.12, sustain: 0 },
+          }).connect(this.reverb);
+
+          this.glitchSynth = new Tone.NoiseSynth({
+            noise: { type: "white" },
+            envelope: { attack: 0.001, decay: 0.08, sustain: 0 },
+          }).connect(this.noiseGain);
+
+          this.ready = true;
+          startHint.textContent = "audio active";
+          setTimeout(() => {
+            startHint.style.display = "none";
+          }, 1400);
+        }
+
+        emitPing(intensity = 0.5) {
+          if (!this.ready) {
+            return;
+          }
+          const now = Tone.now();
+          const note = 44 + intensity * 24;
+          this.pingSynth.triggerAttackRelease(note, "8n", now, 0.35 + intensity * 0.45);
+        }
+
+        emitGlitch(amount) {
+          if (!this.ready || amount <= 0.02) {
+            return;
+          }
+          const now = Tone.now();
+          this.glitchSynth.triggerAttackRelease("32n", now, amount * 0.05);
+        }
+
+        update(motionState, memoryDensity, dt) {
+          if (!this.ready) {
+            return;
+          }
+
+          this.motion = THREE.MathUtils.lerp(this.motion, motionState.speed, 0.08);
+          this.memoryDensity = THREE.MathUtils.lerp(this.memoryDensity, memoryDensity, 0.06);
+
+          const calm = clamp01(1 - this.motion * 0.75);
+          const noiseAmount = clamp01(this.motion * 1.8 - 0.12);
+          this.noiseAmount = THREE.MathUtils.lerp(this.noiseAmount, noiseAmount, 0.08);
+
+          this.filter.frequency.rampTo(lerpRange(calm, 0, 1, 65, 180), 0.1);
+          this.droneGain.gain.rampTo(lerpRange(this.memoryDensity, 0, 0.6, 0.08, 0.22), 0.1);
+          this.reverb.wet.rampTo(lerpRange(this.memoryDensity, 0, 0.7, 0.22, 0.68), 0.1);
+          this.noiseGain.gain.rampTo(lerpRange(this.noiseAmount, 0, 1, 0.0, 0.12 + this.noiseAmount * 0.18), 0.08);
+
+          if (this.noiseAmount > 0.15) {
+            this.emitGlitch(this.noiseAmount);
+          }
+        }
+      }
+
+      const memoryField = new MemoryField(420);
+      scene.add(memoryField.points);
+
+      const rootGroup = new THREE.Group();
+      scene.add(rootGroup);
+
+      const grid = new THREE.GridHelper(1000, 100, 0xffffff, 0x2c2c2c);
+      grid.position.y = -170;
+      grid.material.transparent = true;
+      grid.material.opacity = 0.14;
+      rootGroup.add(grid);
+
+      const guidePlaneGeometry = new THREE.PlaneGeometry(760, 760, 1, 1);
+      const guidePlaneMaterial = new THREE.MeshBasicMaterial({ color: 0x111111, wireframe: true, transparent: true, opacity: 0.13 });
+      const guidePlane = new THREE.Mesh(guidePlaneGeometry, guidePlaneMaterial);
+      guidePlane.rotation.x = -Math.PI / 2;
+      guidePlane.position.y = -124;
+      rootGroup.add(guidePlane);
+
+      const nodes = [];
+      const connections = [];
+      const pulses = [];
+      const soundEngine = new SoundEngine();
+      const pulseLimiter = { clock: 0 };
+
+      const nodeMaterialGroup = new THREE.Group();
+      scene.add(nodeMaterialGroup);
+
+      function randomInVolume(radiusX, radiusY, radiusZ) {
+        const u = Math.random() * 2 - 1;
+        const v = Math.random() * 2 - 1;
+        const w = Math.random() * 2 - 1;
+        return new THREE.Vector3(u * radiusX, v * radiusY, w * radiusZ);
+      }
+
+      function buildNodes() {
+        for (let i = 0; i < settings.nodeCount; i++) {
+          const basePosition = randomInVolume(150, 92, 150);
+          basePosition.y += Math.sin(basePosition.x * 0.02) * 14 - Math.abs(basePosition.y) * 0.06;
+          basePosition.z += Math.cos(basePosition.x * 0.015) * 12;
+          const node = new Node3D(i, basePosition, textures);
+          nodes.push(node);
+          nodeMaterialGroup.add(node.group);
+        }
+      }
+
+      function connectNodes() {
+        const seen = new Set();
+        for (let i = 0; i < nodes.length; i++) {
+          const ranked = [];
+          for (let j = 0; j < nodes.length; j++) {
+            if (i === j) continue;
+            const nodeA = nodes[i];
+            const nodeB = nodes[j];
+            const distance = nodeA.position.distanceTo(nodeB.position);
+            const memoryAffinity = (nodeA.memory + nodeB.memory) * 0.5 + Math.abs(nodeA.affinity - nodeB.affinity) * 0.12;
+            const proximity = clamp01(1 - distance / settings.connectionDistance);
+            const score = proximity * 0.76 + memoryAffinity * 0.58;
+            ranked.push({ nodeA, nodeB, distance, score });
+          }
+          ranked.sort((left, right) => right.score - left.score);
+          let linked = 0;
+          for (const candidate of ranked) {
+            if (linked >= settings.connectionLimit) break;
+            const key = candidate.nodeA.index < candidate.nodeB.index
+              ? `${candidate.nodeA.index}-${candidate.nodeB.index}`
+              : `${candidate.nodeB.index}-${candidate.nodeA.index}`;
+            if (seen.has(key)) continue;
+            if (candidate.distance > settings.connectionDistance || candidate.score < 0.42) continue;
+            seen.add(key);
+            const bundleCount = settings.bundleCount;
+            for (let bundle = 0; bundle < bundleCount; bundle++) {
+              const connection = new Connection3D(candidate.nodeA, candidate.nodeB, bundle, bundleCount);
+              connections.push(connection);
+              rootGroup.add(connection.line);
+            }
+            linked++;
+          }
+        }
+      }
+
+      function createParticleField() {
+        const count = settings.particleCount;
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(count * 3);
+        const seeds = new Float32Array(count * 3);
+        for (let i = 0; i < count; i++) {
+          const p = randomInVolume(210, 140, 210);
+          positions[i * 3] = p.x;
+          positions[i * 3 + 1] = p.y;
+          positions[i * 3 + 2] = p.z;
+          seeds[i * 3] = Math.random() * 1000;
+          seeds[i * 3 + 1] = Math.random() * 1000;
+          seeds[i * 3 + 2] = Math.random() * 1000;
+        }
+        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute("seed", new THREE.BufferAttribute(seeds, 3));
+        const material = new THREE.PointsMaterial({
+          color: 0xffffff,
+          size: 0.8,
+          transparent: true,
+          opacity: 0.45,
+          depthWrite: false,
+          map: textures.glow,
+          blending: THREE.AdditiveBlending,
+          sizeAttenuation: true,
+        });
+        const points = new THREE.Points(geometry, material);
+        points.frustumCulled = false;
+        scene.add(points);
+        return { points, positions, seeds };
+      }
+
+      function createTerrainField() {
+        const count = settings.terrainDensity;
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(count * 3);
+        const seeds = new Float32Array(count * 3);
+        for (let i = 0; i < count; i++) {
+          const x = THREE.MathUtils.randFloatSpread(620);
+          const z = THREE.MathUtils.randFloatSpread(620);
+          const mound = Math.exp(-(x * x + z * z) / (2 * 170 * 170));
+          const ripple = Math.sin(x * 0.018) * Math.cos(z * 0.016);
+          positions[i * 3] = x;
+          positions[i * 3 + 1] = -172 + mound * settings.terrainAmplitude + ripple * 2.1 + Math.random() * 0.8;
+          positions[i * 3 + 2] = z;
+          seeds[i * 3] = Math.random() * 900;
+          seeds[i * 3 + 1] = Math.random() * 900;
+          seeds[i * 3 + 2] = Math.random() * 900;
+        }
+        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute("seed", new THREE.BufferAttribute(seeds, 3));
+        const material = new THREE.PointsMaterial({
+          color: 0xffffff,
+          size: 0.95,
+          transparent: true,
+          opacity: 0.6,
+          depthWrite: false,
+          map: textures.glow,
+          blending: THREE.AdditiveBlending,
+          sizeAttenuation: true,
+        });
+        const points = new THREE.Points(geometry, material);
+        points.frustumCulled = false;
+        scene.add(points);
+        return { points, positions, seeds };
+      }
+
+      function createGlowingBackdrop() {
+        const geometry = new THREE.SphereGeometry(980, 32, 24);
+        const material = new THREE.MeshBasicMaterial({
+          color: 0x050505,
+          side: THREE.BackSide,
+          transparent: true,
+          opacity: 1,
+        });
+        const shell = new THREE.Mesh(geometry, material);
+        scene.add(shell);
+        return shell;
+      }
+
+      const particleField = createParticleField();
+      const terrainField = createTerrainField();
+      const backdrop = createGlowingBackdrop();
+
+      buildNodes();
+      connectNodes();
+
+      const gui = new GUI({ container: document.getElementById("gui-wrap"), width: 280 });
+      gui.title = "Root Network";
+      gui.add(settings, "networkOpen", 0, 1, 0.001).name("network open");
+      gui.add(settings, "glowBoost", 0.2, 2.5, 0.001).name("glow boost");
+      gui.add(settings, "drift", 0, 1, 0.001).name("node drift");
+      gui.add(settings, "filamentNoise", 0, 1, 0.001).name("filament noise");
+      gui.add(settings, "pulseRate", 0.05, 1.2, 0.001).name("pulse rate");
+      gui.add(settings, "audioDepth", 0, 1, 0.001).name("audio depth");
+      gui.add(settings, "autoOrbit", 0, 0.8, 0.001).name("camera drift").onChange((value) => {
+        controls.autoRotateSpeed = value;
+      });
+
+      const motionState = {
+        speed: 0,
+        targetSpeed: 0,
+        idleTime: 0,
+        lastMoveAt: performance.now(),
+        isInside: false,
+      };
+
+      let hasInitializedPointer = false;
+
+      function updatePointer(event) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+        motionState.isInside = true;
+        motionState.lastMoveAt = performance.now();
+        hasInitializedPointer = true;
+      }
+
+      function calculatePresencePoint() {
+        raycaster.setFromCamera(mouse, camera);
+        const hit = raycaster.ray.intersectPlane(presencePlane, presencePoint);
+        if (!hit) {
+          presencePoint.set(0, 0, 0);
+        }
+        presencePoint.z += Math.sin(mouse.x * 1.7) * 78 + Math.cos(mouse.y * 1.3) * 42;
+        smoothedPresence.lerp(presencePoint, 0.06);
+      }
+
+      function maybeCreatePulse(connection, speedFactor) {
+        if (pulseLimiter.clock > 0) {
+          pulseLimiter.clock -= 1;
+          return;
+        }
+        if (Math.random() < settings.pulseRate * 0.012 * speedFactor) {
+          const pulse = new Pulse3D(connection, soundEngine);
+          scene.add(pulse.mesh);
+          pulses.push(pulse);
+          pulseLimiter.clock = 4 + Math.floor(Math.random() * 6);
+        }
+      }
+
+      function updateParticleField(time, motionSpeed) {
+        const positions = particleField.points.geometry.attributes.position.array;
+        const seeds = particleField.points.geometry.attributes.seed.array;
+        for (let i = 0; i < positions.length / 3; i++) {
+          const seed = seeds[i * 3];
+          const x = positions[i * 3];
+          const z = positions[i * 3 + 2];
+          const wave = layeredNoise(x * 0.01, z * 0.01, seed * 0.01, time * 0.2);
+          positions[i * 3 + 1] += Math.sin(time * 1.4 + seed * 0.01) * 0.01 + (wave - 0.5) * 0.008;
+          positions[i * 3] += Math.cos(time * 0.35 + seed * 0.02) * 0.002;
+          positions[i * 3 + 2] += Math.sin(time * 0.28 + seed * 0.018) * 0.002;
+          if (motionSpeed > 0.4) {
+            positions[i * 3 + 1] += (motionSpeed - 0.4) * 0.01;
+          }
+        }
+        particleField.points.geometry.attributes.position.needsUpdate = true;
+      }
+
+      function updateTerrainField(time, memoryDensity) {
+        const positions = terrainField.points.geometry.attributes.position.array;
+        const seeds = terrainField.points.geometry.attributes.seed.array;
+        for (let i = 0; i < positions.length / 3; i++) {
+          const x = positions[i * 3];
+          const z = positions[i * 3 + 2];
+          const seed = seeds[i * 3];
+          const mound = Math.exp(-(x * x + z * z) / (2 * 160 * 160));
+          const wave = Math.sin(time * 0.8 + seed * 0.01 + x * 0.01) * 0.55 + Math.cos(time * 0.74 + z * 0.01) * 0.55;
+          positions[i * 3 + 1] = -172 + mound * (settings.terrainAmplitude + memoryDensity * 18) + wave * 1.8;
+        }
+        terrainField.points.geometry.attributes.position.needsUpdate = true;
+      }
+
+      function animate() {
+        requestAnimationFrame(animate);
+        const dt = Math.min(clock.getDelta(), 0.05);
+        const time = clock.elapsedTime;
+
+        motionState.idleTime = (performance.now() - motionState.lastMoveAt) / 1000;
+        motionState.speed = THREE.MathUtils.lerp(motionState.speed, motionState.targetSpeed, 0.12);
+        motionState.targetSpeed *= 0.92;
+
+        calculatePresencePoint();
+
+        if (hasInitializedPointer) {
+          const openBoost = clamp01(1 - motionState.speed * 0.7);
+          settings.networkOpen = THREE.MathUtils.lerp(settings.networkOpen, openBoost, 0.03);
+          settings.glowBoost = THREE.MathUtils.lerp(settings.glowBoost, 0.9 + openBoost * 0.9, 0.03);
+        }
+
+        memoryField.update(dt);
+        updateParticleField(time, motionState.speed);
+        updateTerrainField(time, memoryField.globalDensity);
+
+        for (const node of nodes) {
+          node.update(dt, smoothedPresence, motionState, memoryField, time);
+        }
+
+        for (const connection of connections) {
+          connection.update(time, motionState, memoryField, smoothedPresence);
+          if (connection.baseStrength > 0.46 && motionState.idleTime < 4) {
+            maybeCreatePulse(connection, 0.75 + connection.baseStrength * 0.8);
+          }
+        }
+
+        for (let i = pulses.length - 1; i >= 0; i--) {
+          const finished = pulses[i].update(dt, time);
+          scene.add(pulses[i].mesh);
+          if (finished) {
+            scene.remove(pulses[i].mesh);
+            pulses.splice(i, 1);
+          }
+        }
+
+        while (pulses.length > 48) {
+          const pulse = pulses.shift();
+          scene.remove(pulse.mesh);
+        }
+
+        const memoryDensity = memoryField.globalDensity;
+        soundEngine.update(motionState, memoryDensity, dt);
+        controls.update();
+
+        backdrop.material.opacity = 0.98;
+        rootGroup.rotation.y = Math.sin(time * 0.05) * 0.02;
+        rootGroup.rotation.x = Math.cos(time * 0.04) * 0.01;
+        nodeMaterialGroup.rotation.y = Math.sin(time * 0.025) * 0.008;
+
+        uiStats.textContent = `density ${memoryDensity.toFixed(2)} / traces ${memoryField.samples} / pulses ${pulses.length} / speed ${motionState.speed.toFixed(2)}`;
+
+        renderer.render(scene, camera);
+      }
+
+      function onPointerMove(event) {
+        const previous = mouse.clone();
+        updatePointer(event);
+        const currentSpeed = previous.distanceTo(mouse) * 120;
+        motionState.targetSpeed = Math.max(motionState.targetSpeed, currentSpeed);
+      }
+
+      function onPointerDown() {
+        soundEngine.start();
+      }
+
+      window.addEventListener("pointermove", onPointerMove, { passive: true });
+      window.addEventListener("pointerdown", onPointerDown, { passive: true, once: true });
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      });
+
+      // Seed the presence position near the center so the field reads immediately.
+      mouse.set(0, 0);
+      updatePointer({ clientX: window.innerWidth * 0.5, clientY: window.innerHeight * 0.5 });
+      smoothedPresence.copy(presencePoint);
+      motionState.targetSpeed = 0;
+
+      animate();
+    </script>
+  </body>
+</html>
