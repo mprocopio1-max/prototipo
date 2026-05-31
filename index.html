@@ -125,6 +125,13 @@
         }
       }
     </script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.11.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@4.11.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.11.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection@2.0.0"></script>
   </head>
   <body>
     <div id="ui">
@@ -135,10 +142,10 @@
       </div>
       <div class="corner">
         <strong>OrbitControls</strong> rotate / zoom / pan<br />
-        click to start audio<br />
+        click to start webcam + audio<br />
         labels mark residual nodes
       </div>
-      <div id="startHint">click to activate sound</div>
+      <div id="startHint">click to activate webcam</div>
       <div id="stats">idle signal pending</div>
       <div class="glitch"></div>
       <div class="gui-wrap" id="gui-wrap"></div>
@@ -807,9 +814,12 @@
           this.filter = null;
           this.masterGain = null;
           this.droneGain = null;
+          this.archiveGain = null;
           this.noiseGain = null;
           this.droneOscillators = [];
+          this.archiveVoices = [];
           this.pingSynth = null;
+          this.resonanceSynth = null;
           this.glitchSynth = null;
         }
 
@@ -826,9 +836,11 @@
           this.filter = new Tone.Filter({ frequency: 120, type: "lowpass", rolloff: -24 });
           this.masterGain = new Tone.Gain(0.0);
           this.droneGain = new Tone.Gain(0.0);
+          this.archiveGain = new Tone.Gain(0.0);
           this.noiseGain = new Tone.Gain(0.0);
 
           this.filter.chain(this.droneGain, this.masterGain, this.reverb, Tone.Destination);
+          this.archiveGain.chain(this.masterGain, this.reverb, Tone.Destination);
           this.noiseGain.chain(this.masterGain, this.reverb, Tone.Destination);
 
           const droneFrequencies = [24, 36, 48.5];
@@ -847,6 +859,15 @@
             octaves: 6,
             oscillator: { type: "sine" },
             envelope: { attack: 0.001, decay: 0.12, sustain: 0 },
+          }).connect(this.reverb);
+
+          this.resonanceSynth = new Tone.FMSynth({
+            harmonicity: 1.5,
+            modulationIndex: 12,
+            oscillator: { type: "sine" },
+            modulation: { type: "triangle" },
+            envelope: { attack: 0.002, decay: 0.2, sustain: 0 },
+            modulationEnvelope: { attack: 0.002, decay: 0.14, sustain: 0 },
           }).connect(this.reverb);
 
           this.glitchSynth = new Tone.NoiseSynth({
@@ -868,6 +889,43 @@
           const now = Tone.now();
           const note = 44 + intensity * 24;
           this.pingSynth.triggerAttackRelease(note, "8n", now, 0.35 + intensity * 0.45);
+        }
+
+        emitResonance(intensity = 0.5, frequency = 110) {
+          if (!this.ready || !this.resonanceSynth) {
+            return;
+          }
+          const now = Tone.now();
+          this.resonanceSynth.triggerAttackRelease(frequency, "8n", now, 0.2 + intensity * 0.25);
+        }
+
+        setArchiveTraces(traces) {
+          if (!this.ready) {
+            return;
+          }
+
+          for (const voice of this.archiveVoices) {
+            voice.oscillator.dispose();
+            voice.gain.dispose();
+          }
+          this.archiveVoices = [];
+
+          const limited = traces.slice(0, 6);
+          for (const trace of limited) {
+            const dominantZones = trace.getDominantZones(1);
+            const zoneWeight = dominantZones.length > 0 ? dominantZones[0].count : 1;
+            const frequencyBase = 28 + (trace.averageMovement * 420) + zoneWeight * 3;
+            const oscillator = new Tone.Oscillator({
+              frequency: frequencyBase,
+              type: trace.stillnessMoments.length > 1 ? "triangle" : "sine",
+              volume: -28,
+            });
+            const gain = new Tone.Gain(0.0);
+            oscillator.connect(gain);
+            gain.connect(this.archiveGain);
+            oscillator.start();
+            this.archiveVoices.push({ oscillator, gain, trace });
+          }
         }
 
         emitGlitch(amount) {
@@ -900,6 +958,7 @@
           this.masterGain.gain.rampTo(lerpRange(this.disturbance, 0, 1, 0.0, 0.22), 0.12);
           this.filter.frequency.rampTo(lerpRange(stage2 + stage5 * 0.45, 0, 1, 58, 240), 0.1);
           this.droneGain.gain.rampTo(lerpRange(stage1 + stage2 + this.memoryDensity * 0.5, 0, 2, 0.0, 0.18 + stage5 * 0.1), 0.1);
+          this.archiveGain.gain.rampTo(lerpRange(stage1 + stage2 + stage3, 0, 3, 0.0, 0.05 + stage5 * 0.03), 0.12);
           this.reverb.wet.rampTo(lerpRange(stage3 + this.memoryDensity * 0.8 + stage5 * 0.35, 0, 2, 0.02, 0.84), 0.1);
           this.noiseGain.gain.rampTo(lerpRange(this.noiseAmount + stage4 * 0.4, 0, 1.4, 0.0, 0.18 + this.noiseAmount * 0.25), 0.08);
 
@@ -921,6 +980,635 @@
           if (this.noiseAmount > 0.15) {
             this.emitGlitch(this.noiseAmount);
           }
+        }
+      }
+
+      function createSessionId() {
+        if (typeof crypto !== "undefined" && crypto.randomUUID) {
+          return crypto.randomUUID();
+        }
+        return `session-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+      }
+
+      function clampZone(value, divisions) {
+        return Math.max(0, Math.min(divisions - 1, Math.floor(value * divisions)));
+      }
+
+      class PresenceTrace {
+        constructor(sessionId = createSessionId(), startTime = Date.now()) {
+          this.sessionId = sessionId;
+          this.startTime = startTime;
+          this.duration = 0;
+          this.averageMovement = 0;
+          this.stillnessMoments = [];
+          this.dominantScreenZones = {};
+          this.pathHistory = [];
+          this.intensityProfile = [];
+          this.generatedNodes = [];
+          this.generatedConnections = [];
+          this.presenceSeconds = 0;
+          this.sampleCount = 0;
+          this.lastZoneKey = null;
+          this.lastRecordTime = startTime;
+          this.activeStillnessStart = null;
+        }
+
+        record(sample) {
+          const timestamp = sample.timestamp ?? Date.now();
+          const deltaSeconds = Math.max(0.016, (timestamp - this.lastRecordTime) / 1000);
+          this.duration = Math.max(this.duration, (timestamp - this.startTime) / 1000);
+          this.lastRecordTime = timestamp;
+
+          if (!sample.presenceDetected) {
+            return;
+          }
+
+          this.sampleCount++;
+          this.presenceSeconds += deltaSeconds;
+          this.averageMovement = this.sampleCount === 1
+            ? sample.movement
+            : this.averageMovement * 0.96 + sample.movement * 0.04;
+
+          const zoneKey = sample.zoneKey ?? "0_0";
+          this.dominantScreenZones[zoneKey] = (this.dominantScreenZones[zoneKey] || 0) + 1;
+
+          if (sample.movement < 0.012) {
+            if (this.activeStillnessStart === null) {
+              this.activeStillnessStart = timestamp;
+            }
+          } else if (this.activeStillnessStart !== null) {
+            const stillnessDuration = (timestamp - this.activeStillnessStart) / 1000;
+            if (stillnessDuration > 0.45) {
+              this.stillnessMoments.push({
+                startTime: this.activeStillnessStart,
+                duration: stillnessDuration,
+                zoneKey,
+              });
+            }
+            this.activeStillnessStart = null;
+          }
+
+          if (this.pathHistory.length === 0 || zoneKey !== this.lastZoneKey || timestamp - this.pathHistory[this.pathHistory.length - 1].t > 120) {
+            this.pathHistory.push({
+              t: timestamp,
+              x: sample.normalized.x,
+              y: sample.normalized.y,
+              z: sample.worldPosition.z,
+              movement: sample.movement,
+              zoneKey,
+            });
+
+            if (this.pathHistory.length > 240) {
+              this.pathHistory.shift();
+            }
+          }
+
+          this.intensityProfile.push({
+            t: timestamp,
+            value: sample.disturbance,
+            stage: sample.stage,
+          });
+
+          if (this.intensityProfile.length > 240) {
+            this.intensityProfile.shift();
+          }
+
+          this.lastZoneKey = zoneKey;
+        }
+
+        noteGeneratedNode(node) {
+          this.generatedNodes.push(node);
+          if (this.generatedNodes.length > 64) {
+            this.generatedNodes.shift();
+          }
+        }
+
+        noteGeneratedConnection(connection) {
+          this.generatedConnections.push(connection);
+          if (this.generatedConnections.length > 128) {
+            this.generatedConnections.shift();
+          }
+        }
+
+        finalize() {
+          if (this.activeStillnessStart !== null) {
+            const stillnessDuration = (Date.now() - this.activeStillnessStart) / 1000;
+            if (stillnessDuration > 0.45) {
+              this.stillnessMoments.push({
+                startTime: this.activeStillnessStart,
+                duration: stillnessDuration,
+                zoneKey: this.lastZoneKey ?? "0_0",
+              });
+            }
+            this.activeStillnessStart = null;
+          }
+
+          this.duration = Math.max(this.duration, this.presenceSeconds);
+          return this.toJSON();
+        }
+
+        getDominantZones(limit = 4) {
+          return Object.entries(this.dominantScreenZones)
+            .sort((left, right) => right[1] - left[1])
+            .slice(0, limit)
+            .map(([zoneKey, count]) => ({ zoneKey, count }));
+        }
+
+        getAnchorPosition() {
+          if (this.pathHistory.length > 0) {
+            const recent = this.pathHistory.slice(-40);
+            const anchor = recent.reduce((accumulator, point) => {
+              accumulator.x += point.x;
+              accumulator.y += point.y;
+              accumulator.z += point.z;
+              return accumulator;
+            }, { x: 0, y: 0, z: 0 });
+            anchor.x /= recent.length;
+            anchor.y /= recent.length;
+            anchor.z /= recent.length;
+            return new THREE.Vector3(
+              THREE.MathUtils.lerp(-160, 160, anchor.x),
+              THREE.MathUtils.lerp(110, -80, anchor.y),
+              THREE.MathUtils.lerp(160, -120, clamp01(0.5 + anchor.z * 0.003))
+            );
+          }
+
+          const dominantZones = this.getDominantZones(1);
+          if (dominantZones.length > 0) {
+            const [xText, yText] = dominantZones[0].zoneKey.split("_").map((value) => Number(value));
+            const xZone = Number.isFinite(xText) ? xText : 1;
+            const yZone = Number.isFinite(yText) ? yText : 1;
+            const x = THREE.MathUtils.lerp(-160, 160, (xZone + 0.5) / 4);
+            const y = THREE.MathUtils.lerp(120, -70, (yZone + 0.5) / 4);
+            return new THREE.Vector3(x, y, 20 - yZone * 22);
+          }
+
+          return new THREE.Vector3(0, 0, 0);
+        }
+
+        similarityTo(other) {
+          const thisZones = this.getDominantZones(6);
+          const otherZones = other.getDominantZones(6);
+          const thisZoneSet = new Set(thisZones.map((entry) => entry.zoneKey));
+          const otherZoneSet = new Set(otherZones.map((entry) => entry.zoneKey));
+          let overlap = 0;
+          for (const zoneKey of thisZoneSet) {
+            if (otherZoneSet.has(zoneKey)) {
+              overlap++;
+            }
+          }
+          const zoneScore = thisZoneSet.size > 0 || otherZoneSet.size > 0
+            ? overlap / Math.max(thisZoneSet.size, otherZoneSet.size, 1)
+            : 0;
+
+          const movementGap = Math.abs(this.averageMovement - other.averageMovement);
+          const movementScore = 1 - clamp01(movementGap / 0.08);
+
+          const stillnessGap = Math.abs(this.stillnessMoments.length - other.stillnessMoments.length);
+          const stillnessScore = 1 - clamp01(stillnessGap / 6);
+
+          const rhythmGap = Math.abs(this.intensityProfile.length - other.intensityProfile.length);
+          const rhythmScore = 1 - clamp01(rhythmGap / 40);
+
+          return clamp01(zoneScore * 0.38 + movementScore * 0.28 + stillnessScore * 0.18 + rhythmScore * 0.16);
+        }
+
+        toJSON() {
+          return {
+            sessionId: this.sessionId,
+            startTime: this.startTime,
+            duration: this.duration,
+            averageMovement: this.averageMovement,
+            stillnessMoments: this.stillnessMoments,
+            dominantScreenZones: this.dominantScreenZones,
+            pathHistory: this.pathHistory,
+            intensityProfile: this.intensityProfile,
+            generatedNodes: this.generatedNodes,
+            generatedConnections: this.generatedConnections,
+            presenceSeconds: this.presenceSeconds,
+            sampleCount: this.sampleCount,
+          };
+        }
+
+        static fromJSON(data) {
+          const trace = new PresenceTrace(data.sessionId, data.startTime);
+          trace.duration = data.duration ?? 0;
+          trace.averageMovement = data.averageMovement ?? 0;
+          trace.stillnessMoments = Array.isArray(data.stillnessMoments) ? data.stillnessMoments : [];
+          trace.dominantScreenZones = data.dominantScreenZones ?? {};
+          trace.pathHistory = Array.isArray(data.pathHistory) ? data.pathHistory : [];
+          trace.intensityProfile = Array.isArray(data.intensityProfile) ? data.intensityProfile : [];
+          trace.generatedNodes = Array.isArray(data.generatedNodes) ? data.generatedNodes : [];
+          trace.generatedConnections = Array.isArray(data.generatedConnections) ? data.generatedConnections : [];
+          trace.presenceSeconds = data.presenceSeconds ?? 0;
+          trace.sampleCount = data.sampleCount ?? 0;
+          return trace;
+        }
+      }
+
+      class PresenceArchive {
+        constructor(storageKey = "root-network-presence-traces-v2") {
+          this.storageKey = storageKey;
+          this.traces = [];
+        }
+
+        load() {
+          try {
+            const raw = localStorage.getItem(this.storageKey);
+            if (!raw) {
+              this.traces = [];
+              return this.traces;
+            }
+
+            const parsed = JSON.parse(raw);
+            this.traces = Array.isArray(parsed)
+              ? parsed.map((entry) => PresenceTrace.fromJSON(entry)).filter(Boolean)
+              : [];
+          } catch (error) {
+            this.traces = [];
+          }
+
+          return this.traces;
+        }
+
+        save() {
+          try {
+            localStorage.setItem(this.storageKey, JSON.stringify(this.traces.map((trace) => trace.toJSON())));
+          } catch (error) {
+            // Ignore quota errors; the visual memory can continue in-session.
+          }
+        }
+
+        addTrace(trace) {
+          const finalized = trace.finalize ? trace.finalize() : trace.toJSON();
+          this.traces.push(PresenceTrace.fromJSON(finalized));
+          if (this.traces.length > 18) {
+            this.traces.splice(0, this.traces.length - 18);
+          }
+          this.save();
+        }
+
+        findMatches(trace, limit = 4) {
+          return this.traces
+            .map((candidate) => ({ trace: candidate, score: trace.similarityTo(candidate) }))
+            .filter((entry) => entry.score > 0.12)
+            .sort((left, right) => right.score - left.score)
+            .slice(0, limit);
+        }
+      }
+
+      class WebcamPresenceTracker {
+        constructor() {
+          this.video = document.createElement("video");
+          this.video.autoplay = true;
+          this.video.muted = true;
+          this.video.playsInline = true;
+          this.video.style.display = "none";
+          document.body.appendChild(this.video);
+
+          this.faceDetector = null;
+          this.handDetector = null;
+          this.stream = null;
+          this.running = false;
+          this.initialized = false;
+          this.lastTimestamp = 0;
+          this.lastFaceCenter = null;
+          this.lastHandCenter = null;
+          this.lastHandCenters = new Map();
+          this.zoneHistory = new Map();
+          this.noPresenceSince = null;
+          this.state = {
+            presenceDetected: false,
+            movement: 0,
+            speed: 0,
+            normalized: new THREE.Vector2(0.5, 0.5),
+            worldPosition: new THREE.Vector3(0, 0, 0),
+            zoneKey: "0_0",
+            stillness: false,
+            timeVisible: 0,
+            disturbance: 0,
+            disturbanceMemory: 0,
+            faceScale: 0,
+            handSpread: 0,
+            handCount: 0,
+            faceCount: 0,
+            gestureEnergy: 0,
+            repeatedZoneCount: 0,
+            presenceSeconds: 0,
+            stage: 1,
+            confidence: 0,
+          };
+          this.onUpdate = null;
+        }
+
+        async start() {
+          if (this.running) {
+            return;
+          }
+
+          this.running = true;
+          this.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+          this.video.srcObject = this.stream;
+          await this.video.play();
+
+          await tf.setBackend("webgl");
+          await tf.ready();
+
+          this.faceDetector = await faceLandmarksDetection.createDetector(
+            faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
+            {
+              runtime: "mediapipe",
+              solutionPath: "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh",
+              refineLandmarks: true,
+              maxFaces: 1,
+            }
+          );
+
+          this.handDetector = await handPoseDetection.createDetector(
+            handPoseDetection.SupportedModels.MediaPipeHands,
+            {
+              runtime: "mediapipe",
+              solutionPath: "https://cdn.jsdelivr.net/npm/@mediapipe/hands",
+              modelType: "full",
+              maxHands: 2,
+            }
+          );
+
+          this.lastTimestamp = performance.now();
+          this.lastFaceCenter = null;
+          this.lastHandCenter = null;
+          this.lastHandCenters.clear();
+          this.loop();
+        }
+
+        stop() {
+          this.running = false;
+          if (this.stream) {
+            for (const track of this.stream.getTracks()) {
+              track.stop();
+            }
+            this.stream = null;
+          }
+        }
+
+        loop() {
+          if (!this.running || !this.faceDetector || !this.handDetector) {
+            return;
+          }
+
+          const now = performance.now();
+          const deltaSeconds = Math.max(0.016, (now - this.lastTimestamp) / 1000);
+          this.lastTimestamp = now;
+
+          Promise.all([
+            this.faceDetector.estimateFaces(this.video, { flipHorizontal: false }),
+            this.handDetector.estimateHands(this.video, { flipHorizontal: false }),
+          ]).then(([faces, hands]) => {
+            const faceData = this.extractFaceData(faces, deltaSeconds);
+            const handData = this.extractHandData(hands, deltaSeconds);
+            const presenceDetected = faceData.present || handData.present;
+
+            if (presenceDetected) {
+              const combinedCenter = new THREE.Vector2();
+              const combinedWeight = [];
+
+              if (faceData.present) {
+                combinedCenter.addScaledVector(faceData.center, 0.65);
+                combinedWeight.push(0.65);
+              }
+
+              if (handData.present) {
+                combinedCenter.addScaledVector(handData.center, 0.35);
+                combinedWeight.push(0.35);
+              }
+
+              const weightSum = combinedWeight.reduce((sum, value) => sum + value, 0) || 1;
+              combinedCenter.multiplyScalar(1 / weightSum);
+
+              const movement = faceData.movement * 0.52 + handData.movement * 0.48;
+              const speed = movement / deltaSeconds;
+              const zoneX = clampZone(combinedCenter.x, 4);
+              const zoneY = clampZone(combinedCenter.y, 4);
+              const zoneKey = `${zoneX}_${zoneY}`;
+              const repeatedZoneCount = (this.zoneHistory.get(zoneKey) || 0) + 1;
+              this.zoneHistory.set(zoneKey, repeatedZoneCount);
+
+              const stillness = speed < 0.015 && handData.handMovement < 0.014;
+              const presenceSeconds = (this.state.presenceDetected ? this.state.presenceSeconds : 0) + deltaSeconds;
+              const timeEnergy = clamp01(presenceSeconds / 90);
+              const movementEnergy = clamp01(speed * 5.5);
+              const handEnergy = clamp01(handData.handCount / 2);
+              const repeatEnergy = clamp01((repeatedZoneCount - 1) / 12);
+              const scaleEnergy = clamp01((faceData.faceScale * 0.9) + (handData.handSpread * 0.6));
+              const gestureEnergy = clamp01(handData.gestureEnergy * 0.9);
+              const stillnessEnergy = stillness ? 0.1 + timeEnergy * 0.08 : 0;
+              const targetDisturbance = clamp01(
+                movementEnergy * 0.38 +
+                gestureEnergy * 0.22 +
+                handEnergy * 0.12 +
+                repeatEnergy * 0.18 +
+                scaleEnergy * 0.14 +
+                stillnessEnergy +
+                timeEnergy * 0.12
+              );
+
+              this.state = {
+                presenceDetected: true,
+                movement,
+                speed,
+                normalized: combinedCenter.clone(),
+                worldPosition: new THREE.Vector3(
+                  THREE.MathUtils.lerp(-165, 165, combinedCenter.x),
+                  THREE.MathUtils.lerp(115, -85, combinedCenter.y),
+                  THREE.MathUtils.lerp(150, -130, clamp01((faceData.faceScale + handData.handSpread) * 0.5))
+                ),
+                zoneKey,
+                stillness,
+                timeVisible: presenceSeconds,
+                disturbance: targetDisturbance,
+                disturbanceMemory: Math.max(this.state.disturbanceMemory * 0.997, targetDisturbance, repeatEnergy * 0.75),
+                faceScale: faceData.faceScale,
+                handSpread: handData.handSpread,
+                handCount: handData.handCount,
+                faceCount: faceData.faceCount,
+                gestureEnergy,
+                repeatedZoneCount,
+                presenceSeconds,
+                stage: this.getStage(targetDisturbance),
+                confidence: clamp01(faceData.confidence * 0.7 + handData.confidence * 0.3),
+              };
+
+              this.lastFaceCenter = faceData.center.clone();
+              this.lastHandCenter = handData.center.clone();
+              this.noPresenceSince = null;
+            } else {
+              const decayed = Math.max(this.state.disturbance * 0.996, this.state.disturbanceMemory * 0.999);
+              this.state = {
+                ...this.state,
+                presenceDetected: false,
+                movement: 0,
+                speed: 0,
+                stillness: false,
+                handCount: 0,
+                faceCount: 0,
+                gestureEnergy: 0,
+                disturbance: decayed,
+                disturbanceMemory: Math.max(this.state.disturbanceMemory * 0.999, decayed),
+                confidence: 0,
+              };
+              if (this.noPresenceSince === null) {
+                this.noPresenceSince = now;
+              }
+            }
+
+            if (this.onUpdate) {
+              this.onUpdate(this.state);
+            }
+
+            if (this.running) {
+              requestAnimationFrame(() => this.loop());
+            }
+          }).catch((error) => {
+            console.error(error);
+            if (this.running) {
+              requestAnimationFrame(() => this.loop());
+            }
+          });
+        }
+
+        extractFaceData(faces, deltaSeconds) {
+          const face = faces && faces[0] ? faces[0] : null;
+          if (!face || !face.keypoints || face.keypoints.length === 0) {
+            return {
+              present: false,
+              center: new THREE.Vector2(0.5, 0.5),
+              movement: 0,
+              faceScale: 0,
+              faceCount: 0,
+              confidence: 0,
+            };
+          }
+
+          const points = face.keypoints;
+          const center = new THREE.Vector2();
+          let minX = Infinity;
+          let minY = Infinity;
+          let maxX = -Infinity;
+          let maxY = -Infinity;
+
+          for (const point of points) {
+            const x = point.x / Math.max(1, this.video.videoWidth || 1);
+            const y = point.y / Math.max(1, this.video.videoHeight || 1);
+            center.x += x;
+            center.y += y;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+          }
+
+          center.multiplyScalar(1 / points.length);
+          const faceWidth = Math.max(0.001, maxX - minX);
+          const faceHeight = Math.max(0.001, maxY - minY);
+          const faceScale = clamp01((faceWidth + faceHeight) * 0.5 * 1.4);
+          const movement = this.lastFaceCenter ? center.distanceTo(this.lastFaceCenter) : 0;
+          this.lastFaceCenter = center.clone();
+
+          return {
+            present: true,
+            center,
+            movement,
+            faceScale,
+            faceCount: 1,
+            confidence: 1,
+          };
+        }
+
+        extractHandData(hands, deltaSeconds) {
+          if (!hands || hands.length === 0) {
+            this.lastHandCenters.clear();
+            return {
+              present: false,
+              center: new THREE.Vector2(0.5, 0.5),
+              movement: 0,
+              handMovement: 0,
+              handSpread: 0,
+              gestureEnergy: 0,
+              handCount: 0,
+              confidence: 0,
+            };
+          }
+
+          const center = new THREE.Vector2();
+          let handMovementTotal = 0;
+          let handSpreadTotal = 0;
+          let gestureEnergyTotal = 0;
+
+          hands.forEach((hand, index) => {
+            const points = hand.keypoints || [];
+            if (points.length === 0) {
+              return;
+            }
+
+            const handCenter = new THREE.Vector2();
+            let minX = Infinity;
+            let minY = Infinity;
+            let maxX = -Infinity;
+            let maxY = -Infinity;
+
+            for (const point of points) {
+              const x = point.x / Math.max(1, this.video.videoWidth || 1);
+              const y = point.y / Math.max(1, this.video.videoHeight || 1);
+              handCenter.x += x;
+              handCenter.y += y;
+              minX = Math.min(minX, x);
+              minY = Math.min(minY, y);
+              maxX = Math.max(maxX, x);
+              maxY = Math.max(maxY, y);
+            }
+
+            handCenter.multiplyScalar(1 / points.length);
+            center.add(handCenter);
+
+            const spread = clamp01((Math.max(0.001, maxX - minX) + Math.max(0.001, maxY - minY)) * 0.7);
+            handSpreadTotal += spread;
+
+            const movementKey = `${hand.handedness || "hand"}-${index}`;
+            const previous = this.lastHandCenters.get(movementKey);
+            const movement = previous ? handCenter.distanceTo(previous) : 0;
+            handMovementTotal += movement;
+            this.lastHandCenters.set(movementKey, handCenter.clone());
+
+            const thumbTip = points[4];
+            const indexTip = points[8];
+            if (thumbTip && indexTip) {
+              const pinchDistance = Math.sqrt((thumbTip.x - indexTip.x) ** 2 + (thumbTip.y - indexTip.y) ** 2);
+              gestureEnergyTotal += clamp01(1 - pinchDistance / 0.12);
+            }
+          });
+
+          center.multiplyScalar(1 / hands.length);
+          const movement = this.lastHandCenter ? center.distanceTo(this.lastHandCenter) : 0;
+          this.lastHandCenter = center.clone();
+
+          return {
+            present: true,
+            center,
+            movement: movement + handMovementTotal * 0.5,
+            handMovement: handMovementTotal,
+            handSpread: clamp01(handSpreadTotal / Math.max(1, hands.length)),
+            gestureEnergy: clamp01(gestureEnergyTotal / Math.max(1, hands.length)),
+            handCount: hands.length,
+            confidence: 1,
+          };
+        }
+
+        getStage(disturbance) {
+          if (disturbance < 0.08) return 1;
+          if (disturbance < 0.24) return 2;
+          if (disturbance < 0.42) return 3;
+          if (disturbance < 0.7) return 4;
+          return 5;
         }
       }
 
@@ -948,8 +1636,45 @@
       const connectionPairs = new Set();
       const pulses = [];
       const soundEngine = new SoundEngine();
+      const traceArchive = new PresenceArchive();
+      const archivedTraces = traceArchive.load();
+      const webcamTracker = new WebcamPresenceTracker();
       const pulseLimiter = { clock: 0 };
       let lastMemoryEvolveAt = 0;
+      let currentTrace = null;
+      let traceNodeCounter = 0;
+
+      const archiveGroup = new THREE.Group();
+      scene.add(archiveGroup);
+
+      const archiveConnectionGroup = new THREE.Group();
+      scene.add(archiveConnectionGroup);
+
+      const sessionTraceGroup = new THREE.Group();
+      scene.add(sessionTraceGroup);
+
+      const presenceOrb = new THREE.Mesh(
+        new THREE.SphereGeometry(2.2, 14, 14),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.0 })
+      );
+      const presenceHalo = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: textures.glow,
+          color: 0xffffff,
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          opacity: 0.0,
+        })
+      );
+      presenceHalo.scale.set(10, 10, 1);
+      presenceOrb.add(presenceHalo);
+      sessionTraceGroup.add(presenceOrb);
+
+      const archiveVisuals = [];
+      const liveTraceLinks = new Map();
+      const generatedSessionNodes = [];
+      const generatedSessionConnections = [];
 
       const nodeMaterialGroup = new THREE.Group();
       scene.add(nodeMaterialGroup);
@@ -1074,6 +1799,255 @@
         }
       }
 
+      function buildArchiveVisuals() {
+        archiveGroup.clear();
+        archiveConnectionGroup.clear();
+
+        const nodeVisuals = [];
+        for (const trace of traceArchive.traces) {
+          const anchor = trace.getAnchorPosition();
+          const ghostNode = new THREE.Mesh(
+            new THREE.SphereGeometry(1.2, 10, 10),
+            new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.08 })
+          );
+          const halo = new THREE.Sprite(
+            new THREE.SpriteMaterial({
+              map: textures.glow,
+              color: 0xffffff,
+              transparent: true,
+              depthWrite: false,
+              blending: THREE.AdditiveBlending,
+              opacity: 0.08,
+            })
+          );
+          halo.scale.set(8, 8, 1);
+          ghostNode.position.copy(anchor);
+          ghostNode.add(halo);
+          archiveGroup.add(ghostNode);
+          nodeVisuals.push({ trace, node: ghostNode, anchor });
+
+          memoryField.recordPresence(anchor, 0.12 + trace.averageMovement * 0.2);
+        }
+
+        for (let i = 0; i < nodeVisuals.length; i++) {
+          for (let j = i + 1; j < nodeVisuals.length; j++) {
+            const left = nodeVisuals[i];
+            const right = nodeVisuals[j];
+            const similarity = left.trace.similarityTo(right.trace);
+            if (similarity < 0.38) {
+              continue;
+            }
+
+            const geometry = new THREE.BufferGeometry().setFromPoints([left.anchor, right.anchor]);
+            const material = new THREE.LineBasicMaterial({
+              color: 0xffffff,
+              transparent: true,
+              opacity: similarity * 0.18,
+              depthWrite: false,
+            });
+            const line = new THREE.Line(geometry, material);
+            archiveConnectionGroup.add(line);
+          }
+        }
+
+        return nodeVisuals;
+      }
+
+      function spawnSessionNode(position, traceLabel) {
+        const node = new THREE.Mesh(
+          new THREE.BoxGeometry(2, 2, 2),
+          new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.42 })
+        );
+        node.position.copy(position);
+        const halo = new THREE.Sprite(
+          new THREE.SpriteMaterial({
+            map: textures.glow,
+            color: 0xffffff,
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+            opacity: 0.24,
+          })
+        );
+        halo.scale.set(9, 9, 1);
+        node.add(halo);
+        sessionTraceGroup.add(node);
+
+        const nodeId = `session-node-${traceNodeCounter++}`;
+        generatedSessionNodes.push({ id: nodeId, position: position.toArray(), label: traceLabel });
+        if (currentTrace) {
+          currentTrace.noteGeneratedNode({ id: nodeId, position: position.toArray(), label: traceLabel });
+        }
+
+        return node;
+      }
+
+      function updateLiveTraceLinks(matches, currentPosition) {
+        const seen = new Set();
+        for (const match of matches) {
+          const anchor = match.trace.getAnchorPosition();
+          const key = `${match.trace.sessionId}`;
+          seen.add(key);
+
+          let entry = liveTraceLinks.get(key);
+          if (!entry) {
+            const geometry = new THREE.BufferGeometry().setFromPoints([currentPosition.clone(), anchor.clone()]);
+            const material = new THREE.LineBasicMaterial({
+              color: 0xffffff,
+              transparent: true,
+              opacity: 0.04,
+              depthWrite: false,
+            });
+            const line = new THREE.Line(geometry, material);
+            archiveConnectionGroup.add(line);
+            entry = { line, anchor, trace: match.trace };
+            liveTraceLinks.set(key, entry);
+          }
+
+          const positions = entry.line.geometry.attributes.position.array;
+          positions[0] = currentPosition.x;
+          positions[1] = currentPosition.y;
+          positions[2] = currentPosition.z;
+          positions[3] = anchor.x;
+          positions[4] = anchor.y;
+          positions[5] = anchor.z;
+          entry.line.geometry.attributes.position.needsUpdate = true;
+          entry.line.material.opacity = 0.04 + match.score * 0.28;
+
+          if (match.score > 0.45) {
+            const linkId = `${currentTrace.sessionId}:${match.trace.sessionId}`;
+            if (!generatedSessionConnections.some((entryConnection) => entryConnection.id === linkId)) {
+              generatedSessionConnections.push({ id: linkId, target: match.trace.sessionId, score: match.score });
+              currentTrace.noteGeneratedConnection({ id: linkId, target: match.trace.sessionId, score: match.score });
+              soundEngine.emitResonance(match.score, 70 + match.score * 220);
+            }
+          }
+        }
+
+        for (const [key, entry] of liveTraceLinks.entries()) {
+          if (!seen.has(key)) {
+            archiveConnectionGroup.remove(entry.line);
+            entry.line.geometry.dispose();
+            entry.line.material.dispose();
+            liveTraceLinks.delete(key);
+          }
+        }
+      }
+
+      function attachSessionNodeToNetwork(position, label, intensity = 0.45) {
+        if (nodes.length === 0) {
+          return null;
+        }
+
+        let closestNode = nodes[0];
+        let closestDistance = closestNode.position.distanceTo(position);
+        for (const node of nodes) {
+          const distance = node.position.distanceTo(position);
+          if (distance < closestDistance) {
+            closestDistance = distance;
+            closestNode = node;
+          }
+        }
+
+        const sessionNode = spawnSessionNode(position, label);
+        const geometry = new THREE.BufferGeometry().setFromPoints([position.clone(), closestNode.position.clone()]);
+        const material = new THREE.LineBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.08 + intensity * 0.18,
+          depthWrite: false,
+        });
+        const line = new THREE.Line(geometry, material);
+        sessionTraceGroup.add(line);
+
+        const connectionId = `session-${traceNodeCounter}-${closestNode.index}`;
+        generatedSessionConnections.push({
+          id: connectionId,
+          from: position.toArray(),
+          to: closestNode.position.toArray(),
+          intensity,
+        });
+        if (currentTrace) {
+          currentTrace.noteGeneratedConnection({
+            id: connectionId,
+            from: position.toArray(),
+            to: closestNode.position.toArray(),
+            intensity,
+          });
+        }
+
+        memoryField.recordPresence(position, intensity * 0.6);
+        return sessionNode;
+      }
+
+      function syncWebcamState(sample) {
+        if (!sample) {
+          return;
+        }
+
+        motionState.speed = THREE.MathUtils.lerp(motionState.speed, sample.speed, 0.16);
+        motionState.targetSpeed = sample.speed;
+        motionState.disturbance = sample.disturbance;
+        motionState.disturbanceMemory = Math.max(motionState.disturbanceMemory, sample.disturbanceMemory);
+        motionState.idleTime = sample.stillness ? motionState.idleTime + 0.016 : 0;
+
+        smoothedPresence.lerp(sample.worldPosition, 0.12);
+        presenceOrb.position.copy(smoothedPresence);
+        presenceOrb.visible = sample.presenceDetected || sample.disturbance > 0.01;
+        presenceOrb.scale.setScalar(1 + sample.faceScale * 3.5 + sample.disturbance * 2.2);
+        presenceOrb.material.opacity = sample.presenceDetected ? 0.14 + sample.disturbance * 0.38 : 0.02 + sample.disturbance * 0.08;
+        presenceHalo.material.opacity = sample.presenceDetected ? 0.18 + sample.disturbance * 0.45 : 0.05;
+        presenceHalo.scale.setScalar(8 + sample.disturbance * 22);
+
+        memoryField.recordPresence(sample.worldPosition, 0.08 + sample.disturbance * 0.16 + sample.movement * 0.12);
+
+        if (currentTrace) {
+          currentTrace.record(sample);
+
+          if (currentTrace.pathHistory.length === 1) {
+            attachSessionNodeToNetwork(sample.worldPosition, `visitor-${currentTrace.sessionId.slice(0, 8)}`, 0.4 + sample.disturbance * 0.2);
+          }
+
+          if (sample.presenceDetected && (sample.repeatedZoneCount === 1 || sample.repeatedZoneCount % 4 === 0)) {
+            attachSessionNodeToNetwork(sample.worldPosition, sample.zoneKey, 0.25 + sample.disturbance * 0.25);
+          }
+
+          const matches = traceArchive.findMatches(currentTrace, 4);
+          updateLiveTraceLinks(matches, sample.worldPosition);
+        }
+
+        if (sample.presenceDetected) {
+          const stageLabel = `stage-${sample.stage}`;
+          uiStats.textContent = `disturbance ${sample.disturbance.toFixed(2)} / presence ${sample.timeVisible.toFixed(1)}s / ${stageLabel} / matches ${liveTraceLinks.size}`;
+        }
+      }
+
+      async function startExperience() {
+        if (webcamTracker.initialized) {
+          return;
+        }
+
+        startHint.textContent = "starting webcam";
+        currentTrace = new PresenceTrace();
+        webcamTracker.onUpdate = syncWebcamState;
+
+        try {
+          await Promise.all([
+            soundEngine.start(),
+            webcamTracker.start(),
+          ]);
+
+          webcamTracker.initialized = true;
+          soundEngine.setArchiveTraces(traceArchive.traces);
+          startHint.style.display = "none";
+        } catch (error) {
+          webcamTracker.initialized = false;
+          webcamTracker.running = false;
+          currentTrace = null;
+          startHint.textContent = "webcam permission needed";
+        }
+      }
+
       function createParticleField() {
         const count = settings.particleCount;
         const geometry = new THREE.BufferGeometry();
@@ -1160,6 +2134,7 @@
 
       buildNodes();
       connectNodes();
+      buildArchiveVisuals();
 
       const gui = new GUI({ container: document.getElementById("gui-wrap"), width: 280 });
       gui.title = "Root Network";
@@ -1255,21 +2230,23 @@
         const dt = Math.min(clock.getDelta(), 0.05);
         const time = clock.elapsedTime;
 
-        motionState.idleTime = (performance.now() - motionState.lastMoveAt) / 1000;
-        motionState.speed = THREE.MathUtils.lerp(motionState.speed, motionState.targetSpeed, 0.12);
-        motionState.targetSpeed *= 0.92;
+        const webcamState = webcamTracker.state;
+        if (webcamTracker.initialized) {
+          motionState.speed = THREE.MathUtils.lerp(motionState.speed, webcamState.speed, 0.16);
+          motionState.targetSpeed = webcamState.speed;
+          motionState.disturbance = Math.max(webcamState.disturbance, motionState.disturbanceMemory);
+          motionState.disturbanceMemory = Math.max(motionState.disturbanceMemory, webcamState.disturbanceMemory);
+          motionState.idleTime = webcamState.presenceDetected ? 0 : motionState.idleTime + dt;
+          smoothedPresence.lerp(webcamState.worldPosition, 0.12);
+        }
 
         const memoryFloor = clamp01(memoryField.globalDensity * 0.08);
         motionState.disturbanceMemory = Math.max(motionState.disturbanceMemory, memoryFloor);
         motionState.disturbance = Math.max(motionState.disturbance, motionState.disturbanceMemory);
 
-        calculatePresencePoint();
-
-        if (hasInitializedPointer) {
-          const openBoost = clamp01(1 - motionState.disturbance * 0.85);
-          settings.networkOpen = THREE.MathUtils.lerp(settings.networkOpen, openBoost, 0.03);
-          settings.glowBoost = THREE.MathUtils.lerp(settings.glowBoost, 0.72 + motionState.disturbance * 1.25, 0.03);
-        }
+        const openBoost = clamp01(1 - motionState.disturbance * 0.85);
+        settings.networkOpen = THREE.MathUtils.lerp(settings.networkOpen, openBoost, 0.03);
+        settings.glowBoost = THREE.MathUtils.lerp(settings.glowBoost, 0.72 + motionState.disturbance * 1.25, 0.03);
 
         memoryField.update(dt);
         evolveMemoryConnections(time);
@@ -1306,36 +2283,26 @@
         soundEngine.update(motionState, memoryDensity, dt);
         controls.update();
 
+        presenceOrb.position.copy(smoothedPresence);
+        presenceOrb.visible = webcamTracker.initialized && (webcamState.presenceDetected || motionState.disturbance > 0.01);
+        presenceOrb.scale.setScalar(1.2 + motionState.disturbance * 3.2);
+        presenceOrb.material.opacity = webcamTracker.initialized ? 0.08 + motionState.disturbance * 0.34 : 0.0;
+        presenceHalo.material.opacity = webcamTracker.initialized ? 0.12 + motionState.disturbance * 0.4 : 0.0;
+        presenceHalo.scale.setScalar(8 + motionState.disturbance * 18);
+
         backdrop.material.opacity = 0.98;
         rootGroup.rotation.y = Math.sin(time * 0.05) * 0.02;
         rootGroup.rotation.x = Math.cos(time * 0.04) * 0.01;
         nodeMaterialGroup.rotation.y = Math.sin(time * 0.025) * 0.008;
 
-        uiStats.textContent = `disturbance ${motionState.disturbance.toFixed(2)} / density ${memoryDensity.toFixed(2)} / traces ${memoryField.samples} / pulses ${pulses.length}`;
+        uiStats.textContent = webcamTracker.initialized
+          ? `disturbance ${motionState.disturbance.toFixed(2)} / density ${memoryDensity.toFixed(2)} / traces ${memoryField.samples} / pulses ${pulses.length}`
+          : "awaiting webcam permission";
 
         renderer.render(scene, camera);
       }
 
-      function onPointerMove(event) {
-        const previous = mouse.clone();
-        updatePointer(event);
-        const currentSpeed = previous.distanceTo(mouse) * 120;
-        motionState.targetSpeed = Math.max(motionState.targetSpeed, currentSpeed);
-        calculatePresencePoint();
-        const movementDisturbance = clamp01(currentSpeed / 42);
-        const localMemory = clamp01(memoryField.sample(smoothedPresence) * 0.08);
-        const disturbanceGain = movementDisturbance * (0.08 + localMemory * 0.22);
-        motionState.disturbance = clamp01(Math.max(motionState.disturbance, motionState.disturbanceMemory) + disturbanceGain);
-        motionState.disturbanceMemory = Math.max(motionState.disturbanceMemory, motionState.disturbance);
-        memoryField.recordPresence(smoothedPresence, 0.06 + movementDisturbance * 0.14 + localMemory * 0.12);
-      }
-
-      function onPointerDown() {
-        soundEngine.start();
-      }
-
-      window.addEventListener("pointermove", onPointerMove, { passive: true });
-      window.addEventListener("pointerdown", onPointerDown, { passive: true, once: true });
+      window.addEventListener("pointerdown", startExperience, { passive: true });
       window.addEventListener("resize", () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
@@ -1343,11 +2310,17 @@
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       });
 
-      // Seed the presence position near the center so the field reads immediately.
-      mouse.set(0, 0);
-      updatePointer({ clientX: window.innerWidth * 0.5, clientY: window.innerHeight * 0.5 });
-      smoothedPresence.copy(presencePoint);
-      motionState.targetSpeed = 0;
+      window.addEventListener("beforeunload", () => {
+        if (currentTrace) {
+          traceArchive.addTrace(currentTrace);
+        } else {
+          traceArchive.save();
+        }
+        webcamTracker.stop();
+      });
+
+      smoothedPresence.set(0, 0, 0);
+      presenceOrb.position.copy(smoothedPresence);
 
       animate();
     </script>
