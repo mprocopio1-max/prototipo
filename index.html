@@ -294,6 +294,9 @@
           this.samples = 0;
           this.globalDensity = 0;
           this.maxTraces = 520;
+          this.gridX = 24;
+          this.gridY = 12;
+          this.gridZ = 24;
           this.traceGeometry = new THREE.BufferGeometry();
           this.tracePositions = new Float32Array(this.maxTraces * 3);
           this.traceColors = new Float32Array(this.maxTraces * 3);
@@ -310,25 +313,20 @@
           });
           this.points = new THREE.Points(this.traceGeometry, this.traceMaterial);
           this.points.frustumCulled = false;
-          this.grid = new Float32Array(24 * 12 * 24);
+          this.grid = new Float32Array(this.gridX * this.gridY * this.gridZ);
         }
 
         recordPresence(position, intensity = 1) {
+          const strength = Math.max(0.04, intensity);
           this.traces.push({
             position: position.clone(),
             age: 0,
-            life: 12 + intensity * 16,
-            strength: intensity,
-            radius: 10 + intensity * 28,
+            life: 9999,
+            strength,
+            radius: 10 + strength * 30,
           });
 
-          const x = Math.floor(THREE.MathUtils.mapLinear(position.x, -this.volume, this.volume, 0, 23));
-          const y = Math.floor(THREE.MathUtils.mapLinear(position.y, -this.volume * 0.5, this.volume * 0.5, 0, 11));
-          const z = Math.floor(THREE.MathUtils.mapLinear(position.z, -this.volume, this.volume, 0, 23));
-          const index = this._gridIndex(x, y, z);
-          if (index >= 0) {
-            this.grid[index] = Math.min(1, this.grid[index] + intensity * 0.24);
-          }
+          this.deposit(position, strength);
 
           if (this.traces.length > this.maxTraces) {
             this.traces.splice(0, this.traces.length - this.maxTraces);
@@ -336,24 +334,46 @@
         }
 
         sample(position) {
-          let density = 0;
+          const fx = THREE.MathUtils.mapLinear(position.x, -this.volume, this.volume, 0, this.gridX - 1);
+          const fy = THREE.MathUtils.mapLinear(position.y, -this.volume * 0.5, this.volume * 0.5, 0, this.gridY - 1);
+          const fz = THREE.MathUtils.mapLinear(position.z, -this.volume, this.volume, 0, this.gridZ - 1);
 
+          const x0 = Math.floor(fx);
+          const y0 = Math.floor(fy);
+          const z0 = Math.floor(fz);
+          const x1 = x0 + 1;
+          const y1 = y0 + 1;
+          const z1 = z0 + 1;
+          const tx = fx - x0;
+          const ty = fy - y0;
+          const tz = fz - z0;
+
+          const c000 = this._sampleCell(x0, y0, z0);
+          const c100 = this._sampleCell(x1, y0, z0);
+          const c010 = this._sampleCell(x0, y1, z0);
+          const c110 = this._sampleCell(x1, y1, z0);
+          const c001 = this._sampleCell(x0, y0, z1);
+          const c101 = this._sampleCell(x1, y0, z1);
+          const c011 = this._sampleCell(x0, y1, z1);
+          const c111 = this._sampleCell(x1, y1, z1);
+
+          const x00 = c000 * (1 - tx) + c100 * tx;
+          const x10 = c010 * (1 - tx) + c110 * tx;
+          const x01 = c001 * (1 - tx) + c101 * tx;
+          const x11 = c011 * (1 - tx) + c111 * tx;
+          const y0Mix = x00 * (1 - ty) + x10 * ty;
+          const y1Mix = x01 * (1 - ty) + x11 * ty;
+          const gridDensity = y0Mix * (1 - tz) + y1Mix * tz;
+
+          let traceDensity = 0;
           for (let i = this.traces.length - 1; i >= 0; i--) {
             const trace = this.traces[i];
             const distance = trace.position.distanceTo(position);
             const falloff = clamp01(1 - distance / trace.radius);
-            density += falloff * falloff * trace.strength;
+            traceDensity += falloff * falloff * trace.strength;
           }
 
-          const x = Math.floor(THREE.MathUtils.mapLinear(position.x, -this.volume, this.volume, 0, 23));
-          const y = Math.floor(THREE.MathUtils.mapLinear(position.y, -this.volume * 0.5, this.volume * 0.5, 0, 11));
-          const z = Math.floor(THREE.MathUtils.mapLinear(position.z, -this.volume, this.volume, 0, 23));
-          const index = this._gridIndex(x, y, z);
-          if (index >= 0) {
-            density += this.grid[index] * 0.5;
-          }
-
-          return density;
+          return Math.log1p(gridDensity + traceDensity * 0.9);
         }
 
         update(dt) {
@@ -363,24 +383,14 @@
           for (let i = this.traces.length - 1; i >= 0; i--) {
             const trace = this.traces[i];
             trace.age += dt;
-            trace.position.y += Math.sin(trace.age * 1.6 + trace.position.x * 0.02) * dt * 0.35;
-            trace.position.x += Math.cos(trace.age * 1.2 + trace.position.z * 0.02) * dt * 0.18;
-            trace.position.z += Math.sin(trace.age * 1.3 + trace.position.x * 0.015) * dt * 0.2;
-            trace.strength *= Math.max(0.985, 1 - dt * 0.02);
-
-            if (trace.age > trace.life || trace.strength < 0.01) {
-              this.traces.splice(i, 1);
-            } else {
-              active++;
-              totalDensity += trace.strength;
-            }
+            trace.position.y += Math.sin(trace.age * 0.6 + trace.position.x * 0.01) * dt * 0.05;
+            trace.position.x += Math.cos(trace.age * 0.45 + trace.position.z * 0.01) * dt * 0.03;
+            trace.position.z += Math.sin(trace.age * 0.5 + trace.position.x * 0.008) * dt * 0.03;
+            active++;
+            totalDensity += trace.strength;
           }
 
-          for (let i = 0; i < this.grid.length; i++) {
-            this.grid[i] *= Math.max(0.996, 1 - dt * 0.007);
-          }
-
-          this.globalDensity = active > 0 ? totalDensity / active : this.globalDensity * 0.995;
+          this.globalDensity = active > 0 ? totalDensity / active : this.globalDensity;
 
           const positions = this.traceGeometry.attributes.position.array;
           const colors = this.traceGeometry.attributes.color.array;
@@ -391,7 +401,7 @@
             positions[cursor * 3] = trace.position.x;
             positions[cursor * 3 + 1] = trace.position.y;
             positions[cursor * 3 + 2] = trace.position.z;
-            const brightness = clamp01(0.35 + trace.strength * 0.85);
+            const brightness = clamp01(0.25 + trace.strength * 0.18 + this.sample(trace.position) * 0.12);
             colors[cursor * 3] = brightness;
             colors[cursor * 3 + 1] = brightness;
             colors[cursor * 3 + 2] = brightness;
@@ -411,11 +421,65 @@
           this.samples = active;
         }
 
+        deposit(position, intensity = 1) {
+          const fx = THREE.MathUtils.mapLinear(position.x, -this.volume, this.volume, 0, this.gridX - 1);
+          const fy = THREE.MathUtils.mapLinear(position.y, -this.volume * 0.5, this.volume * 0.5, 0, this.gridY - 1);
+          const fz = THREE.MathUtils.mapLinear(position.z, -this.volume, this.volume, 0, this.gridZ - 1);
+          const cx = Math.round(fx);
+          const cy = Math.round(fy);
+          const cz = Math.round(fz);
+
+          for (let dz = -1; dz <= 1; dz++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                const distance = Math.abs(dx) + Math.abs(dy) + Math.abs(dz);
+                const falloff = distance === 0 ? 1 : distance === 1 ? 0.55 : distance === 2 ? 0.28 : 0.12;
+                const index = this._gridIndex(cx + dx, cy + dy, cz + dz);
+                if (index >= 0) {
+                  this.grid[index] += intensity * falloff;
+                }
+              }
+            }
+          }
+        }
+
+        getHotspots(limit = 8, threshold = 1.4) {
+          const hotspots = [];
+          for (let z = 0; z < this.gridZ; z++) {
+            for (let y = 0; y < this.gridY; y++) {
+              for (let x = 0; x < this.gridX; x++) {
+                const value = this.grid[this._gridIndex(x, y, z)];
+                if (value >= threshold) {
+                  hotspots.push({ x, y, z, value });
+                }
+              }
+            }
+          }
+          hotspots.sort((left, right) => right.value - left.value);
+          return hotspots.slice(0, limit);
+        }
+
+        cellToWorld(x, y, z) {
+          return new THREE.Vector3(
+            THREE.MathUtils.mapLinear(x + 0.5, 0, this.gridX, -this.volume, this.volume),
+            THREE.MathUtils.mapLinear(y + 0.5, 0, this.gridY, -this.volume * 0.5, this.volume * 0.5),
+            THREE.MathUtils.mapLinear(z + 0.5, 0, this.gridZ, -this.volume, this.volume)
+          );
+        }
+
         _gridIndex(x, y, z) {
-          if (x < 0 || x > 23 || y < 0 || y > 11 || z < 0 || z > 23) {
+          if (x < 0 || x >= this.gridX || y < 0 || y >= this.gridY || z < 0 || z >= this.gridZ) {
             return -1;
           }
-          return x + y * 24 + z * 24 * 12;
+          return x + y * this.gridX + z * this.gridX * this.gridY;
+        }
+
+        _sampleCell(x, y, z) {
+          const index = this._gridIndex(x, y, z);
+          if (index < 0) {
+            return 0;
+          }
+          return this.grid[index];
         }
       }
 
@@ -580,10 +644,12 @@
           this.bundleCount = bundleCount;
           this.baseStrength = 0;
           this.memoryAffinity = 0;
+          this.activation = 0.08 + Math.random() * 0.18;
           this.active = true;
           this.curve = new THREE.CatmullRomCurve3([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]);
           this.segments = 32;
           this.points = new Float32Array((this.segments + 1) * 3);
+          this.key = connectionKey(nodeA, nodeB);
 
           const geometry = new THREE.BufferGeometry();
           geometry.setAttribute("position", new THREE.BufferAttribute(this.points, 3));
@@ -609,15 +675,18 @@
           const memoryA = this.nodeA.memory;
           const memoryB = this.nodeB.memory;
           const affinity = 1 - clamp01(distance / settings.connectionDistance);
-          this.memoryAffinity = (memoryA + memoryB) * 0.45 + memoryField.sample(tmpVecC.copy(a).add(b).multiplyScalar(0.5)) * 0.3;
-          this.baseStrength = clamp01(affinity * 0.7 + this.memoryAffinity * 0.7);
-
-          const presenceDistance = presence.distanceTo(tmpVecD.copy(a).add(b).multiplyScalar(0.5));
+          const midpoint = tmpVecA.copy(a).add(b).multiplyScalar(0.5);
+          const quarterA = a.clone().lerp(b, 0.25);
+          const quarterB = a.clone().lerp(b, 0.75);
+          const pathMemory = (memoryField.sample(quarterA) + memoryField.sample(midpoint) + memoryField.sample(quarterB)) / 3;
+          const presenceDistance = presence.distanceTo(midpoint);
           const presenceOpen = clamp01(1 - presenceDistance / 200);
           const motionNoise = motionState.speed * 0.22;
           const calm = clamp01(1 - motionState.speed * 0.8);
           const driftTowardPresence = motionState.idleTime > 1.2 ? (motionState.idleTime - 1.2) * 2.2 : 0;
-          const midpoint = tmpVecA.copy(a).add(b).multiplyScalar(0.5);
+          this.activation = THREE.MathUtils.clamp(this.activation + (pathMemory * 0.004 + presenceOpen * 0.003 + calm * 0.0015), 0, 10);
+          this.memoryAffinity = (memoryA + memoryB) * 0.25 + pathMemory * 0.95 + this.activation * 0.05;
+          this.baseStrength = clamp01(affinity * 0.45 + this.memoryAffinity * 0.55 + this.activation * 0.05);
 
           for (let bundle = 0; bundle < this.bundleCount; bundle++) {
             const curveOffset = (bundle - (this.bundleCount - 1) * 0.5) * 2.8;
@@ -654,10 +723,14 @@
             }
           }
 
-          const alpha = clamp01(0.05 + this.baseStrength * 0.78 + settings.networkOpen * 0.14 + motionNoise);
+          const alpha = clamp01(0.05 + this.baseStrength * 0.72 + this.activation * 0.03 + settings.networkOpen * 0.12 + motionNoise);
           this.material.opacity = this.bundleIndex === 0 ? alpha * 0.72 : alpha * 0.28;
-          this.line.scale.setScalar(1 + this.memoryAffinity * 0.08);
+          this.line.scale.setScalar(1 + this.memoryAffinity * 0.08 + this.activation * 0.015);
           this.line.material.linewidth = this.width;
+        }
+
+        markActivation(amount = 0.2) {
+          this.activation = Math.min(this.activation + amount, 10);
         }
 
         getPulseCurve() {
@@ -679,9 +752,9 @@
           this.connection = connection;
           this.curve = connection.getPulseCurve();
           this.progress = Math.random() * 0.2;
-          this.speed = 0.08 + Math.random() * 0.18;
+          this.speed = 0.05 + connection.baseStrength * 0.09 + connection.activation * 0.008 + Math.random() * 0.04;
           this.life = 0;
-          this.maxLife = 9 + Math.random() * 8;
+          this.maxLife = 8 + connection.activation * 0.8 + Math.random() * 5;
           this.soundEngine = soundEngine;
           this.mesh = new THREE.Mesh(
             new THREE.SphereGeometry(0.85, 10, 10),
@@ -704,7 +777,7 @@
           );
           this.halo.scale.set(6.5, 6.5, 1);
           this.mesh.add(this.halo);
-          this.soundEngine.emitPing(0.4 + this.connection.baseStrength * 0.5);
+          this.soundEngine.emitPing(0.35 + this.connection.baseStrength * 0.45 + this.connection.activation * 0.04);
         }
 
         update(dt, time) {
@@ -714,7 +787,7 @@
           this.mesh.position.copy(point);
           const pulseScale = 1 + Math.sin(time * 10 + this.life * 2.5) * 0.06;
           this.mesh.scale.setScalar(1 + this.connection.baseStrength * 0.28);
-          this.halo.scale.setScalar(6 + this.connection.baseStrength * 4.5 * pulseScale);
+          this.halo.scale.setScalar(5.2 + this.connection.baseStrength * 3.6 * pulseScale + this.connection.activation * 0.3);
           this.mesh.material.opacity = clamp01(0.7 + this.connection.baseStrength * 0.3);
           return this.progress >= 1 || this.life > this.maxLife;
         }
@@ -725,11 +798,14 @@
           this.started = false;
           this.ready = false;
           this.motion = 0;
+          this.disturbance = 0;
           this.memoryDensity = 0;
           this.noiseAmount = 0;
+          this.pingTimer = 0;
           this.wetness = 0.35;
           this.reverb = null;
           this.filter = null;
+          this.masterGain = null;
           this.droneGain = null;
           this.noiseGain = null;
           this.droneOscillators = [];
@@ -748,11 +824,12 @@
           await this.reverb.generate();
 
           this.filter = new Tone.Filter({ frequency: 120, type: "lowpass", rolloff: -24 });
-          this.droneGain = new Tone.Gain(0.14);
+          this.masterGain = new Tone.Gain(0.0);
+          this.droneGain = new Tone.Gain(0.0);
           this.noiseGain = new Tone.Gain(0.0);
 
-          this.filter.chain(this.droneGain, this.reverb, Tone.Destination);
-          this.noiseGain.chain(this.reverb, Tone.Destination);
+          this.filter.chain(this.droneGain, this.masterGain, this.reverb, Tone.Destination);
+          this.noiseGain.chain(this.masterGain, this.reverb, Tone.Destination);
 
           const droneFrequencies = [24, 36, 48.5];
           for (let i = 0; i < droneFrequencies.length; i++) {
@@ -807,16 +884,39 @@
           }
 
           this.motion = THREE.MathUtils.lerp(this.motion, motionState.speed, 0.08);
+          this.disturbance = THREE.MathUtils.lerp(this.disturbance, motionState.disturbance, 0.06);
           this.memoryDensity = THREE.MathUtils.lerp(this.memoryDensity, memoryDensity, 0.06);
 
-          const calm = clamp01(1 - this.motion * 0.75);
-          const noiseAmount = clamp01(this.motion * 1.8 - 0.12);
+          const calm = clamp01(1 - this.disturbance);
+          const noiseAmount = clamp01(this.disturbance * 1.2 - 0.18);
           this.noiseAmount = THREE.MathUtils.lerp(this.noiseAmount, noiseAmount, 0.08);
 
-          this.filter.frequency.rampTo(lerpRange(calm, 0, 1, 65, 180), 0.1);
-          this.droneGain.gain.rampTo(lerpRange(this.memoryDensity, 0, 0.6, 0.08, 0.22), 0.1);
-          this.reverb.wet.rampTo(lerpRange(this.memoryDensity, 0, 0.7, 0.22, 0.68), 0.1);
-          this.noiseGain.gain.rampTo(lerpRange(this.noiseAmount, 0, 1, 0.0, 0.12 + this.noiseAmount * 0.18), 0.08);
+          const stage1 = clamp01(THREE.MathUtils.smoothstep(this.disturbance, 0.06, 0.18));
+          const stage2 = clamp01(THREE.MathUtils.smoothstep(this.disturbance, 0.16, 0.34));
+          const stage3 = clamp01(THREE.MathUtils.smoothstep(this.disturbance, 0.3, 0.54));
+          const stage4 = clamp01(THREE.MathUtils.smoothstep(this.disturbance, 0.5, 0.74));
+          const stage5 = clamp01(THREE.MathUtils.smoothstep(this.disturbance, 0.7, 0.92));
+
+          this.masterGain.gain.rampTo(lerpRange(this.disturbance, 0, 1, 0.0, 0.22), 0.12);
+          this.filter.frequency.rampTo(lerpRange(stage2 + stage5 * 0.45, 0, 1, 58, 240), 0.1);
+          this.droneGain.gain.rampTo(lerpRange(stage1 + stage2 + this.memoryDensity * 0.5, 0, 2, 0.0, 0.18 + stage5 * 0.1), 0.1);
+          this.reverb.wet.rampTo(lerpRange(stage3 + this.memoryDensity * 0.8 + stage5 * 0.35, 0, 2, 0.02, 0.84), 0.1);
+          this.noiseGain.gain.rampTo(lerpRange(this.noiseAmount + stage4 * 0.4, 0, 1.4, 0.0, 0.18 + this.noiseAmount * 0.25), 0.08);
+
+          for (let i = 0; i < this.droneOscillators.length; i++) {
+            const oscillator = this.droneOscillators[i];
+            const baseFrequency = [24, 36, 48.5][i];
+            const harmonicLift = 1 + stage4 * 0.12 + stage5 * 0.18;
+            oscillator.frequency.rampTo(baseFrequency * harmonicLift, 0.08);
+            oscillator.detune.rampTo((i - 1) * stage5 * 16, 0.08);
+          }
+
+          this.pingTimer -= dt;
+          const pingInterval = lerpRange(stage2 + stage3 + stage4 + stage5, 0, 4, 2.4, 0.18);
+          if (stage2 > 0 && this.pingTimer <= 0) {
+            this.emitPing(0.16 + stage2 * 0.32 + stage5 * 0.3);
+            this.pingTimer = pingInterval + Math.random() * pingInterval * 0.35;
+          }
 
           if (this.noiseAmount > 0.15) {
             this.emitGlitch(this.noiseAmount);
@@ -845,9 +945,11 @@
 
       const nodes = [];
       const connections = [];
+      const connectionPairs = new Set();
       const pulses = [];
       const soundEngine = new SoundEngine();
       const pulseLimiter = { clock: 0 };
+      let lastMemoryEvolveAt = 0;
 
       const nodeMaterialGroup = new THREE.Group();
       scene.add(nodeMaterialGroup);
@@ -870,8 +972,29 @@
         }
       }
 
+      function connectionKey(nodeA, nodeB) {
+        return nodeA.index < nodeB.index
+          ? `${nodeA.index}-${nodeB.index}`
+          : `${nodeB.index}-${nodeA.index}`;
+      }
+
+      function addConnectionBundle(nodeA, nodeB, bundleCount = settings.bundleCount) {
+        const key = connectionKey(nodeA, nodeB);
+        if (connectionPairs.has(key)) {
+          return false;
+        }
+
+        connectionPairs.add(key);
+        for (let bundle = 0; bundle < bundleCount; bundle++) {
+          const connection = new Connection3D(nodeA, nodeB, bundle, bundleCount);
+          connections.push(connection);
+          rootGroup.add(connection.line);
+        }
+
+        return true;
+      }
+
       function connectNodes() {
-        const seen = new Set();
         for (let i = 0; i < nodes.length; i++) {
           const ranked = [];
           for (let j = 0; j < nodes.length; j++) {
@@ -888,19 +1011,65 @@
           let linked = 0;
           for (const candidate of ranked) {
             if (linked >= settings.connectionLimit) break;
-            const key = candidate.nodeA.index < candidate.nodeB.index
-              ? `${candidate.nodeA.index}-${candidate.nodeB.index}`
-              : `${candidate.nodeB.index}-${candidate.nodeA.index}`;
-            if (seen.has(key)) continue;
             if (candidate.distance > settings.connectionDistance || candidate.score < 0.42) continue;
-            seen.add(key);
-            const bundleCount = settings.bundleCount;
-            for (let bundle = 0; bundle < bundleCount; bundle++) {
-              const connection = new Connection3D(candidate.nodeA, candidate.nodeB, bundle, bundleCount);
-              connections.push(connection);
-              rootGroup.add(connection.line);
+            if (addConnectionBundle(candidate.nodeA, candidate.nodeB)) {
+              linked++;
             }
-            linked++;
+          }
+        }
+      }
+
+      function evolveMemoryConnections(time) {
+        if (time - lastMemoryEvolveAt < 1.8) {
+          return;
+        }
+
+        lastMemoryEvolveAt = time;
+        const hotspots = memoryField.getHotspots(6, 1.5);
+        let created = 0;
+
+        for (const hotspot of hotspots) {
+          const world = memoryField.cellToWorld(hotspot.x, hotspot.y, hotspot.z);
+          let closestA = null;
+          let closestB = null;
+          let closestDistanceA = Infinity;
+          let closestDistanceB = Infinity;
+
+          for (const node of nodes) {
+            const distance = node.position.distanceTo(world);
+            if (distance < closestDistanceA) {
+              closestB = closestA;
+              closestDistanceB = closestDistanceA;
+              closestA = node;
+              closestDistanceA = distance;
+            } else if (distance < closestDistanceB) {
+              closestB = node;
+              closestDistanceB = distance;
+            }
+          }
+
+          if (!closestA || !closestB) {
+            continue;
+          }
+
+          const pairKey = connectionKey(closestA, closestB);
+          const existing = connections.filter((connection) => connection.key === pairKey);
+          if (existing.length > 0) {
+            for (const connection of existing) {
+              connection.markActivation(0.12 + hotspot.value * 0.04);
+            }
+            continue;
+          }
+
+          if (closestA.position.distanceTo(closestB.position) < settings.connectionDistance * 1.25) {
+            if (addConnectionBundle(closestA, closestB, 1)) {
+              created++;
+              memoryField.recordPresence(world, 0.15 + hotspot.value * 0.08);
+            }
+          }
+
+          if (created >= 2) {
+            break;
           }
         }
       }
@@ -1007,6 +1176,8 @@
       const motionState = {
         speed: 0,
         targetSpeed: 0,
+        disturbance: 0,
+        disturbanceMemory: 0,
         idleTime: 0,
         lastMoveAt: performance.now(),
         isInside: false,
@@ -1042,6 +1213,7 @@
           const pulse = new Pulse3D(connection, soundEngine);
           scene.add(pulse.mesh);
           pulses.push(pulse);
+          connection.markActivation(0.08 + speedFactor * 0.02);
           pulseLimiter.clock = 4 + Math.floor(Math.random() * 6);
         }
       }
@@ -1057,14 +1229,14 @@
           positions[i * 3 + 1] += Math.sin(time * 1.4 + seed * 0.01) * 0.01 + (wave - 0.5) * 0.008;
           positions[i * 3] += Math.cos(time * 0.35 + seed * 0.02) * 0.002;
           positions[i * 3 + 2] += Math.sin(time * 0.28 + seed * 0.018) * 0.002;
-          if (motionSpeed > 0.4) {
-            positions[i * 3 + 1] += (motionSpeed - 0.4) * 0.01;
+          if (motionSpeed > 0.15) {
+            positions[i * 3 + 1] += motionSpeed * 0.012;
           }
         }
         particleField.points.geometry.attributes.position.needsUpdate = true;
       }
 
-      function updateTerrainField(time, memoryDensity) {
+      function updateTerrainField(time, memoryDensity, disturbance) {
         const positions = terrainField.points.geometry.attributes.position.array;
         const seeds = terrainField.points.geometry.attributes.seed.array;
         for (let i = 0; i < positions.length / 3; i++) {
@@ -1073,7 +1245,7 @@
           const seed = seeds[i * 3];
           const mound = Math.exp(-(x * x + z * z) / (2 * 160 * 160));
           const wave = Math.sin(time * 0.8 + seed * 0.01 + x * 0.01) * 0.55 + Math.cos(time * 0.74 + z * 0.01) * 0.55;
-          positions[i * 3 + 1] = -172 + mound * (settings.terrainAmplitude + memoryDensity * 18) + wave * 1.8;
+          positions[i * 3 + 1] = -172 + mound * (settings.terrainAmplitude + memoryDensity * 18 + disturbance * 14) + wave * (1.4 + disturbance * 0.6);
         }
         terrainField.points.geometry.attributes.position.needsUpdate = true;
       }
@@ -1087,17 +1259,22 @@
         motionState.speed = THREE.MathUtils.lerp(motionState.speed, motionState.targetSpeed, 0.12);
         motionState.targetSpeed *= 0.92;
 
+        const memoryFloor = clamp01(memoryField.globalDensity * 0.08);
+        motionState.disturbanceMemory = Math.max(motionState.disturbanceMemory, memoryFloor);
+        motionState.disturbance = Math.max(motionState.disturbance, motionState.disturbanceMemory);
+
         calculatePresencePoint();
 
         if (hasInitializedPointer) {
-          const openBoost = clamp01(1 - motionState.speed * 0.7);
+          const openBoost = clamp01(1 - motionState.disturbance * 0.85);
           settings.networkOpen = THREE.MathUtils.lerp(settings.networkOpen, openBoost, 0.03);
-          settings.glowBoost = THREE.MathUtils.lerp(settings.glowBoost, 0.9 + openBoost * 0.9, 0.03);
+          settings.glowBoost = THREE.MathUtils.lerp(settings.glowBoost, 0.72 + motionState.disturbance * 1.25, 0.03);
         }
 
         memoryField.update(dt);
-        updateParticleField(time, motionState.speed);
-        updateTerrainField(time, memoryField.globalDensity);
+        evolveMemoryConnections(time);
+        updateParticleField(time, motionState.disturbance);
+        updateTerrainField(time, memoryField.globalDensity, motionState.disturbance);
 
         for (const node of nodes) {
           node.update(dt, smoothedPresence, motionState, memoryField, time);
@@ -1105,7 +1282,7 @@
 
         for (const connection of connections) {
           connection.update(time, motionState, memoryField, smoothedPresence);
-          if (connection.baseStrength > 0.46 && motionState.idleTime < 4) {
+          if (connection.baseStrength > 0.46 && motionState.disturbance > 0.08) {
             maybeCreatePulse(connection, 0.75 + connection.baseStrength * 0.8);
           }
         }
@@ -1114,6 +1291,7 @@
           const finished = pulses[i].update(dt, time);
           scene.add(pulses[i].mesh);
           if (finished) {
+            pulses[i].connection.markActivation(0.18 + pulses[i].connection.baseStrength * 0.12);
             scene.remove(pulses[i].mesh);
             pulses.splice(i, 1);
           }
@@ -1133,7 +1311,7 @@
         rootGroup.rotation.x = Math.cos(time * 0.04) * 0.01;
         nodeMaterialGroup.rotation.y = Math.sin(time * 0.025) * 0.008;
 
-        uiStats.textContent = `density ${memoryDensity.toFixed(2)} / traces ${memoryField.samples} / pulses ${pulses.length} / speed ${motionState.speed.toFixed(2)}`;
+        uiStats.textContent = `disturbance ${motionState.disturbance.toFixed(2)} / density ${memoryDensity.toFixed(2)} / traces ${memoryField.samples} / pulses ${pulses.length}`;
 
         renderer.render(scene, camera);
       }
@@ -1143,6 +1321,13 @@
         updatePointer(event);
         const currentSpeed = previous.distanceTo(mouse) * 120;
         motionState.targetSpeed = Math.max(motionState.targetSpeed, currentSpeed);
+        calculatePresencePoint();
+        const movementDisturbance = clamp01(currentSpeed / 42);
+        const localMemory = clamp01(memoryField.sample(smoothedPresence) * 0.08);
+        const disturbanceGain = movementDisturbance * (0.08 + localMemory * 0.22);
+        motionState.disturbance = clamp01(Math.max(motionState.disturbance, motionState.disturbanceMemory) + disturbanceGain);
+        motionState.disturbanceMemory = Math.max(motionState.disturbanceMemory, motionState.disturbance);
+        memoryField.recordPresence(smoothedPresence, 0.06 + movementDisturbance * 0.14 + localMemory * 0.12);
       }
 
       function onPointerDown() {
