@@ -84,6 +84,30 @@
         backdrop-filter: blur(6px);
       }
 
+      #drawTraceButton {
+        position: absolute;
+        right: 16px;
+        top: 14px;
+        padding: 11px 14px;
+        border: 1px solid rgba(255, 255, 255, 0.28);
+        background: rgba(0, 0, 0, 0.34);
+        color: rgba(255, 255, 255, 0.88);
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        font-family: inherit;
+        font-size: 10px;
+        cursor: pointer;
+        pointer-events: auto;
+        backdrop-filter: blur(6px);
+      }
+
+      #drawTraceButton:hover,
+      #drawTraceButton.is-active {
+        color: rgba(255, 255, 255, 1);
+        border-color: rgba(255, 255, 255, 0.52);
+        background: rgba(255, 255, 255, 0.06);
+      }
+
       #stats {
         position: absolute;
         left: 16px;
@@ -95,10 +119,25 @@
         color: rgba(255, 255, 255, 0.6);
       }
 
+      #handOverlayCanvas {
+        position: absolute;
+        left: 16px;
+        bottom: 44px;
+        width: 220px;
+        height: 165px;
+        display: none;
+        pointer-events: none;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(0, 0, 0, 0.42);
+        backdrop-filter: blur(4px);
+        opacity: 0.9;
+        mix-blend-mode: screen;
+      }
+
       .gui-wrap {
         position: absolute;
         right: 12px;
-        top: 12px;
+        top: 58px;
         pointer-events: auto;
         opacity: 0.84;
       }
@@ -129,16 +168,18 @@
   <body>
     <div id="ui">
       <div class="hud">
-        <div class="title">Root Network / Invisible Presence</div>
-        <div>Move slowly to open the network.</div>
-        <div class="meta">Fast motion disturbs the field. Stillness thickens memory.</div>
+        <div class="title">Traces of Us</div>
+        <div>Una rete latente registra presenze invisibili.</div>
+        <div class="meta">La mano disegna una traccia; la permanenza diventa profondità.</div>
       </div>
+      <button id="drawTraceButton">Disegna traccia</button>
       <div class="corner">
         <strong>OrbitControls</strong> rotate / zoom / pan<br />
-        click to start audio<br />
-        labels mark residual nodes
+        premi “disegna traccia” per lasciare una presenza<br />
+        le tracce simili si riconoscono in nodi residui
       </div>
-      <div id="startHint">click to activate sound</div>
+      <div id="startHint">premi “disegna traccia”</div>
+      <canvas id="handOverlayCanvas" width="320" height="240"></canvas>
       <div id="stats">idle signal pending</div>
       <div class="glitch"></div>
       <div class="gui-wrap" id="gui-wrap"></div>
@@ -222,7 +263,18 @@
       const clock = new THREE.Clock();
       const uiStats = document.getElementById("stats");
       const startHint = document.getElementById("startHint");
+      const drawTraceButton = document.getElementById("drawTraceButton");
       const webcamVideo = document.getElementById("webcam");
+      const handOverlayCanvas = document.getElementById("handOverlayCanvas");
+      const handOverlayCtx = handOverlayCanvas ? handOverlayCanvas.getContext("2d") : null;
+      const handOverlayConnections = [
+        [0, 1], [1, 2], [2, 3], [3, 4],
+        [0, 5], [5, 6], [6, 7], [7, 8],
+        [0, 9], [9, 10], [10, 11], [11, 12],
+        [0, 13], [13, 14], [14, 15], [15, 16],
+        [0, 17], [17, 18], [18, 19], [19, 20],
+        [5, 9], [9, 13], [13, 17]
+      ];
 
       const webcamTracking = {
         active: false,
@@ -259,6 +311,70 @@
       function lerpRange(value, inMin, inMax, outMin, outMax) {
         const t = clamp01((value - inMin) / (inMax - inMin));
         return outMin + (outMax - outMin) * t;
+      }
+
+      function setHandOverlayVisible(visible) {
+        if (!handOverlayCanvas || !handOverlayCtx) return;
+        handOverlayCanvas.style.display = visible ? "block" : "none";
+        if (!visible) {
+          handOverlayCtx.clearRect(0, 0, handOverlayCanvas.width, handOverlayCanvas.height);
+        }
+      }
+
+      function drawHandOverlay(hands) {
+        if (!handOverlayCanvas || !handOverlayCtx || handOverlayCanvas.style.display === "none") return;
+        const ctx = handOverlayCtx;
+        const width = handOverlayCanvas.width;
+        const height = handOverlayCanvas.height;
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
+        ctx.fillRect(0, 0, width, height);
+
+        if (!hands || hands.length === 0) return;
+
+        const videoWidth = webcamVideo && webcamVideo.videoWidth ? webcamVideo.videoWidth : 1;
+        const videoHeight = webcamVideo && webcamVideo.videoHeight ? webcamVideo.videoHeight : 1;
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+        ctx.lineWidth = 1.35;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        for (const hand of hands) {
+          const keypoints = hand && hand.keypoints ? hand.keypoints : [];
+          if (keypoints.length === 0) continue;
+
+          const point = (index) => {
+            const kp = keypoints[index];
+            if (!kp) return null;
+            return {
+              x: (kp.x / videoWidth) * width,
+              y: (kp.y / videoHeight) * height,
+            };
+          };
+
+          ctx.beginPath();
+          for (const [a, b] of handOverlayConnections) {
+            const pa = point(a);
+            const pb = point(b);
+            if (!pa || !pb) continue;
+            ctx.moveTo(pa.x, pa.y);
+            ctx.lineTo(pb.x, pb.y);
+          }
+          ctx.stroke();
+
+          for (let i = 0; i < keypoints.length; i++) {
+            const p = point(i);
+            if (!p) continue;
+            const radius = i === 0 || i === 4 || i === 8 || i === 12 || i === 16 || i === 20 ? 2.4 : 1.65;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        ctx.restore();
       }
 
       function shortErrorTag(message) {
@@ -548,7 +664,7 @@
           this.labelActive = index % 12 === 0;
           this.group = new THREE.Group();
 
-          const geometry = Math.random() > 0.45 ? new THREE.BoxGeometry(1.8, 1.8, 1.8) : new THREE.SphereGeometry(1.15, 8, 8);
+          const geometry = new THREE.SphereGeometry(1.25, 12, 10);
           this.body = new THREE.Mesh(
             geometry,
             new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 })
@@ -624,7 +740,7 @@
             this.reactionDelay = Math.max(this.reactionDelay, 0.2 + presenceDistance * 0.0018);
             this.reactionPulse = Math.min(1, this.reactionPulse + pulse * 0.08);
 
-            if (presenceDistance < 42 && density > 0.1) {
+            if (typeof traceSystem !== "undefined" && traceSystem.recording && presenceDistance < 42 && density > 0.1) {
               memoryField.recordPresence(this.position, 0.6 + pulse * 0.8);
             }
           } else {
@@ -869,7 +985,7 @@
           this.started = true;
           await Tone.start();
 
-          this.reverb = new Tone.Reverb({ decay: 11, preDelay: 0.06, wet: 0.35 });
+          this.reverb = new Tone.Reverb({ decay: 4.2, preDelay: 0.035, wet: 0.12 });
           await this.reverb.generate();
 
           this.filter = new Tone.Filter({ frequency: 120, type: "lowpass", rolloff: -24 });
@@ -885,7 +1001,7 @@
             const osc = new Tone.Oscillator({
               frequency: droneFrequencies[i],
               type: i === 1 ? "triangle" : "sine",
-              volume: -18,
+              volume: -27,
             }).connect(this.filter);
             osc.start();
             this.droneOscillators.push(osc);
@@ -904,10 +1020,12 @@
           }).connect(this.noiseGain);
 
           this.ready = true;
-          startHint.textContent = "audio active";
-          setTimeout(() => {
-            startHint.style.display = "none";
-          }, 1400);
+          if (!traceSystem.enabled) {
+            startHint.textContent = "audio active";
+            setTimeout(() => {
+              if (!traceSystem.enabled) startHint.style.display = "none";
+            }, 1400);
+          }
         }
 
         emitPing(intensity = 0.5) {
@@ -946,11 +1064,11 @@
           const stage4 = clamp01(THREE.MathUtils.smoothstep(this.disturbance, 0.5, 0.74));
           const stage5 = clamp01(THREE.MathUtils.smoothstep(this.disturbance, 0.7, 0.92));
 
-          this.masterGain.gain.rampTo(lerpRange(this.disturbance, 0, 1, 0.0, 0.22), 0.12);
-          this.filter.frequency.rampTo(lerpRange(stage2 + stage5 * 0.45, 0, 1, 58, 240), 0.1);
-          this.droneGain.gain.rampTo(lerpRange(stage1 + stage2 + this.memoryDensity * 0.5, 0, 2, 0.0, 0.18 + stage5 * 0.1), 0.1);
-          this.reverb.wet.rampTo(lerpRange(stage3 + this.memoryDensity * 0.8 + stage5 * 0.35, 0, 2, 0.02, 0.84), 0.1);
-          this.noiseGain.gain.rampTo(lerpRange(this.noiseAmount + stage4 * 0.4, 0, 1.4, 0.0, 0.18 + this.noiseAmount * 0.25), 0.08);
+          this.masterGain.gain.rampTo(lerpRange(this.disturbance, 0, 1, 0.0, 0.085) * settings.audioDepth, 0.18);
+          this.filter.frequency.rampTo(lerpRange(stage2 + stage5 * 0.45, 0, 1, 46, 165), 0.14);
+          this.droneGain.gain.rampTo(lerpRange(stage1 + stage2 + this.memoryDensity * 0.5, 0, 2, 0.0, 0.08 + stage5 * 0.025) * settings.audioDepth, 0.16);
+          this.reverb.wet.rampTo(lerpRange(stage3 + this.memoryDensity * 0.8 + stage5 * 0.35, 0, 2, 0.015, 0.18), 0.16);
+          this.noiseGain.gain.rampTo(lerpRange(this.noiseAmount + stage4 * 0.4, 0, 1.4, 0.0, 0.035 + this.noiseAmount * 0.04) * settings.audioDepth, 0.12);
 
           for (let i = 0; i < this.droneOscillators.length; i++) {
             const oscillator = this.droneOscillators[i];
@@ -961,14 +1079,14 @@
           }
 
           this.pingTimer -= dt;
-          const pingInterval = lerpRange(stage2 + stage3 + stage4 + stage5, 0, 4, 2.4, 0.18);
-          if (stage2 > 0 && this.pingTimer <= 0) {
-            this.emitPing(0.16 + stage2 * 0.32 + stage5 * 0.3);
+          const pingInterval = lerpRange(stage2 + stage3 + stage4 + stage5, 0, 4, 4.8, 1.25);
+          if (stage2 > 0.18 && this.pingTimer <= 0) {
+            this.emitPing(0.06 + stage2 * 0.12 + stage5 * 0.08);
             this.pingTimer = pingInterval + Math.random() * pingInterval * 0.35;
           }
 
-          if (this.noiseAmount > 0.15) {
-            this.emitGlitch(this.noiseAmount);
+          if (this.noiseAmount > 0.42) {
+            this.emitGlitch(this.noiseAmount * 0.45);
           }
         }
       }
@@ -999,6 +1117,261 @@
       const soundEngine = new SoundEngine();
       const pulseLimiter = { clock: 0 };
       let lastMemoryEvolveAt = 0;
+
+
+      const traceSystem = {
+        enabled: false,
+        recording: false,
+        current: null,
+        traces: [],
+        maxDuration: 20000,
+        firstDetectionAt: 0,
+        lastRecordAt: 0,
+        lastNormalized: new THREE.Vector2(0.5, 0.5),
+        dwell: 0,
+        maxPoints: 640,
+        savedCount: 0,
+      };
+
+      function makeTraceMaterial(opacity = 0.58) {
+        return new THREE.LineBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+      }
+
+      function setStoredTraceOpacity(opacity) {
+        for (const trace of traceSystem.traces) {
+          trace.line.material.opacity = opacity;
+          trace.points.material.opacity = opacity * 0.62;
+          for (const link of trace.links) link.material.opacity = opacity * 0.5;
+        }
+      }
+
+      function beginTraceRecording(now) {
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(traceSystem.maxPoints * 3);
+        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geometry.setDrawRange(0, 0);
+
+        const line = new THREE.Line(geometry, makeTraceMaterial(0.74));
+        line.frustumCulled = false;
+        rootGroup.add(line);
+
+        const pointGeometry = new THREE.BufferGeometry();
+        const pointPositions = new Float32Array(traceSystem.maxPoints * 3);
+        pointGeometry.setAttribute("position", new THREE.BufferAttribute(pointPositions, 3));
+        pointGeometry.setDrawRange(0, 0);
+        const pointMaterial = new THREE.PointsMaterial({
+          color: 0xffffff,
+          size: 1.35,
+          transparent: true,
+          opacity: 0.48,
+          depthWrite: false,
+          map: textures.glow,
+          blending: THREE.AdditiveBlending,
+          sizeAttenuation: true,
+        });
+        const points = new THREE.Points(pointGeometry, pointMaterial);
+        points.frustumCulled = false;
+        rootGroup.add(points);
+
+        traceSystem.recording = true;
+        traceSystem.firstDetectionAt = now;
+        traceSystem.lastRecordAt = now;
+        traceSystem.dwell = 0;
+        traceSystem.current = {
+          id: traceSystem.savedCount + 1,
+          line,
+          points,
+          geometry,
+          positions,
+          pointGeometry,
+          pointPositions,
+          samples: [],
+          links: [],
+          signature: null,
+          startedAt: now,
+        };
+        setStoredTraceOpacity(0.12);
+        if (startHint) startHint.textContent = "traccia in registrazione // 20s";
+      }
+
+      function recordTracePoint(nx, ny, travel, now) {
+        if (!traceSystem.recording) beginTraceRecording(now);
+        const trace = traceSystem.current;
+        if (!trace) return;
+
+        const dt = Math.max(16, now - traceSystem.lastRecordAt);
+        const normalized = new THREE.Vector2(nx, ny);
+        const normalizedTravel = normalized.distanceTo(traceSystem.lastNormalized);
+        if (normalizedTravel < 0.026) {
+          traceSystem.dwell += dt;
+        } else {
+          traceSystem.dwell = Math.max(0, traceSystem.dwell - dt * 0.7);
+        }
+        traceSystem.lastNormalized.copy(normalized);
+        traceSystem.lastRecordAt = now;
+
+        const point = smoothedPresence.clone();
+        const dwellDepth = clamp01(traceSystem.dwell / 3600);
+        point.z += dwellDepth * 190 + Math.sin(trace.samples.length * 0.22 + trace.id) * 6;
+        point.x += (nx - 0.5) * 24;
+        point.y += (0.5 - ny) * 18;
+
+        const last = trace.samples[trace.samples.length - 1];
+        if (last && last.position.distanceTo(point) < 2.1 && now - traceSystem.firstDetectionAt < traceSystem.maxDuration - 50) return;
+        if (trace.samples.length >= traceSystem.maxPoints) return;
+
+        const movementIntensity = clamp01(travel * 32);
+        trace.samples.push({ position: point, nx, ny, dwell: dwellDepth, movement: movementIntensity, time: now - traceSystem.firstDetectionAt });
+        const index = trace.samples.length - 1;
+        trace.positions[index * 3] = point.x;
+        trace.positions[index * 3 + 1] = point.y;
+        trace.positions[index * 3 + 2] = point.z;
+        trace.pointPositions[index * 3] = point.x;
+        trace.pointPositions[index * 3 + 1] = point.y;
+        trace.pointPositions[index * 3 + 2] = point.z;
+        trace.geometry.setDrawRange(0, trace.samples.length);
+        trace.pointGeometry.setDrawRange(0, trace.samples.length);
+        trace.geometry.attributes.position.needsUpdate = true;
+        trace.pointGeometry.attributes.position.needsUpdate = true;
+
+        memoryField.recordPresence(point, 0.07 + movementIntensity * 0.12 + dwellDepth * 0.16);
+        motionState.disturbance = Math.max(motionState.disturbance, 0.08 + movementIntensity * 0.08);
+        motionState.disturbanceMemory = Math.max(motionState.disturbanceMemory, 0.055 + dwellDepth * 0.035);
+
+        if (now - traceSystem.firstDetectionAt >= traceSystem.maxDuration) finishTraceRecording();
+      }
+
+      function traceSignature(trace) {
+        if (!trace.samples.length) return { x: 0.5, y: 0.5, z: 0, spreadX: 0, spreadY: 0 };
+        let sx = 0, sy = 0, sz = 0, minX = 1, maxX = 0, minY = 1, maxY = 0;
+        for (const sample of trace.samples) {
+          sx += sample.nx;
+          sy += sample.ny;
+          sz += sample.dwell;
+          minX = Math.min(minX, sample.nx); maxX = Math.max(maxX, sample.nx);
+          minY = Math.min(minY, sample.ny); maxY = Math.max(maxY, sample.ny);
+        }
+        const n = trace.samples.length;
+        return { x: sx / n, y: sy / n, z: sz / n, spreadX: maxX - minX, spreadY: maxY - minY };
+      }
+
+      function signatureDistance(a, b) {
+        const dx = (a.x - b.x) * 1.25;
+        const dy = (a.y - b.y) * 1.25;
+        const dz = (a.z - b.z) * 1.8;
+        const dsx = (a.spreadX - b.spreadX) * 0.7;
+        const dsy = (a.spreadY - b.spreadY) * 0.7;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz + dsx * dsx + dsy * dsy);
+      }
+
+      function closestSampleToSignature(trace, signature) {
+        let best = trace.samples[0];
+        let bestScore = Infinity;
+        for (const sample of trace.samples) {
+          const score = Math.abs(sample.nx - signature.x) + Math.abs(sample.ny - signature.y) + Math.abs(sample.dwell - signature.z);
+          if (score < bestScore) { bestScore = score; best = sample; }
+        }
+        return best || { position: new THREE.Vector3() };
+      }
+
+      function createSimilarityNode(traceA, traceB, similarity) {
+        const sampleA = closestSampleToSignature(traceA, traceB.signature || traceSignature(traceB));
+        const sampleB = closestSampleToSignature(traceB, traceA.signature || traceSignature(traceA));
+        const position = sampleA.position.clone().lerp(sampleB.position, 0.5);
+        position.z += 8 + similarity * 26;
+
+        const node = new Node3D(nodes.length, position, textures);
+        node.memory = 0.52 + similarity * 0.42;
+        node.energy = 0.42 + similarity * 0.48;
+        node.affinity = similarity;
+        nodes.push(node);
+        nodeMaterialGroup.add(node.group);
+        memoryField.recordPresence(position, 0.36 + similarity * 0.35);
+
+        const linkGeometry = new THREE.BufferGeometry().setFromPoints([sampleA.position, position, sampleB.position]);
+        const link = new THREE.Line(linkGeometry, makeTraceMaterial(0.28 + similarity * 0.22));
+        link.frustumCulled = false;
+        rootGroup.add(link);
+        traceA.links.push(link);
+        traceB.links.push(link);
+      }
+
+      function connectSimilarTraces(newTrace) {
+        let created = 0;
+        for (const trace of traceSystem.traces) {
+          const distance = signatureDistance(newTrace.signature, trace.signature);
+          if (distance < 0.34) {
+            createSimilarityNode(newTrace, trace, 1 - distance / 0.34);
+            created++;
+          }
+          if (created >= 3) break;
+        }
+      }
+
+      function finishTraceRecording() {
+        const trace = traceSystem.current;
+        if (!trace) return;
+        traceSystem.recording = false;
+        traceSystem.current = null;
+        traceSystem.enabled = false;
+        trace.signature = traceSignature(trace);
+
+        if (trace.samples.length > 2) {
+          connectSimilarTraces(trace);
+          traceSystem.traces.push(trace);
+          traceSystem.savedCount++;
+          trace.line.material.opacity = 0.42;
+          trace.points.material.opacity = 0.24;
+          if (startHint) startHint.textContent = `traccia ${String(trace.id).padStart(2, "0")} salvata`;
+        } else {
+          rootGroup.remove(trace.line);
+          rootGroup.remove(trace.points);
+          if (startHint) startHint.textContent = "nessuna mano rilevata";
+        }
+
+        setStoredTraceOpacity(0.42);
+        if (drawTraceButton) {
+          drawTraceButton.classList.remove("is-active");
+          drawTraceButton.disabled = false;
+          drawTraceButton.textContent = "Disegna traccia";
+        }
+        controls.autoRotate = true;
+        stopWebcamTracking();
+      }
+
+      function cancelEmptyTraceSession(message = "traccia interrotta") {
+        traceSystem.enabled = false;
+        traceSystem.recording = false;
+        traceSystem.current = null;
+        setStoredTraceOpacity(0.42);
+        if (drawTraceButton) {
+          drawTraceButton.classList.remove("is-active");
+          drawTraceButton.disabled = false;
+          drawTraceButton.textContent = "Disegna traccia";
+        }
+        if (startHint) startHint.textContent = message;
+        controls.autoRotate = true;
+        stopWebcamTracking();
+      }
+
+      function stopWebcamTracking() {
+        webcamTracking.active = false;
+        webcamTracking.source = "saved";
+        webcamTracking.hands = 0;
+        webcamTracking.faces = 0;
+        if (webcamTracking.stream) {
+          for (const track of webcamTracking.stream.getTracks()) track.stop();
+        }
+        webcamTracking.stream = null;
+        if (webcamVideo) webcamVideo.srcObject = null;
+        setHandOverlayVisible(false);
+      }
 
       const nodeMaterialGroup = new THREE.Group();
       scene.add(nodeMaterialGroup);
@@ -1207,9 +1580,6 @@
       const terrainField = createTerrainField();
       const backdrop = createGlowingBackdrop();
 
-      buildNodes();
-      connectNodes();
-
       const gui = new GUI({ container: document.getElementById("gui-wrap"), width: 280 });
       gui.title = "Root Network";
       gui.add(settings, "networkOpen", 0, 1, 0.001).name("network open");
@@ -1263,7 +1633,9 @@
         const disturbanceGain = movementDisturbance * (0.08 + localMemory * 0.22);
         motionState.disturbance = clamp01(Math.max(motionState.disturbance, motionState.disturbanceMemory) + disturbanceGain);
         motionState.disturbanceMemory = Math.max(motionState.disturbanceMemory, motionState.disturbance);
-        memoryField.recordPresence(smoothedPresence, 0.06 + movementDisturbance * 0.14 + localMemory * 0.12);
+        if (traceSystem.recording) {
+          memoryField.recordPresence(smoothedPresence, 0.025 + movementDisturbance * 0.04 + localMemory * 0.04);
+        }
       }
 
       function calculatePresencePoint() {
@@ -1383,7 +1755,8 @@
         rootGroup.rotation.x = Math.cos(time * 0.04) * 0.01;
         nodeMaterialGroup.rotation.y = Math.sin(time * 0.025) * 0.008;
 
-        uiStats.textContent = `disturbance ${motionState.disturbance.toFixed(2)} / density ${memoryDensity.toFixed(2)} / traces ${memoryField.samples} / pulses ${pulses.length} / src ${webcamTracking.source} h${webcamTracking.hands} f${webcamTracking.faces} d${webcamTracking.handReady ? 1 : 0}${webcamTracking.faceReady ? 1 : 0} s${webcamTracking.initState} e${shortErrorTag(webcamTracking.lastError)}`;
+        const recordLeft = traceSystem.recording ? Math.max(0, 20 - (performance.now() - traceSystem.firstDetectionAt) / 1000).toFixed(1) : "--";
+        uiStats.textContent = `tracce ${traceSystem.traces.length} / nodi ${nodes.length} / registrazione ${traceSystem.recording ? recordLeft + "s" : "off"} / src ${webcamTracking.source} h${webcamTracking.hands} / riverbero basso`;
 
         renderer.render(scene, camera);
       }
@@ -1476,6 +1849,8 @@
             faceDetector ? faceDetector.estimateFaces(webcamVideo, { flipHorizontal: true }) : Promise.resolve([]),
           ]);
 
+          drawHandOverlay(hands);
+
           const handCount = hands ? hands.length : 0;
           const faceCount = faces ? faces.length : 0;
           webcamTracking.hands = handCount;
@@ -1498,10 +1873,12 @@
               const speedScale = 2.2 + clamp01(travel * 80) * 8;
 
               applyTrackedPresence(nx, ny, speedScale);
+              if (traceSystem.enabled) {
+                recordTracePoint(nx, ny, travel, now);
+              }
 
               motionState.disturbance = Math.max(motionState.disturbance, 0.12);
               motionState.disturbanceMemory = Math.max(motionState.disturbanceMemory, 0.08);
-              memoryField.recordPresence(smoothedPresence, 0.05);
 
               webcamTracking.lastX = nx;
               webcamTracking.lastY = ny;
@@ -1522,8 +1899,6 @@
 
               motionState.disturbance = Math.max(motionState.disturbance, 0.08);
               motionState.disturbanceMemory = Math.max(motionState.disturbanceMemory, 0.06);
-              memoryField.recordPresence(smoothedPresence, 0.035);
-
               webcamTracking.lastX = nx;
               webcamTracking.lastY = ny;
             }
@@ -1532,17 +1907,25 @@
             if (now - webcamTracking.lastSeenAt > 600) {
               motionState.disturbance = Math.max(motionState.disturbance, 0.04);
               motionState.disturbanceMemory = Math.max(motionState.disturbanceMemory, 0.03);
-              memoryField.recordPresence(smoothedPresence, 0.02);
+              if (traceSystem.recording) memoryField.recordPresence(smoothedPresence, 0.012);
             }
           }
         } catch (error) {
           console.error("Webcam tracking loop error", error);
         }
 
+        if (traceSystem.recording && now - traceSystem.firstDetectionAt >= traceSystem.maxDuration) {
+          finishTraceRecording();
+          return;
+        }
+
         requestAnimationFrame(trackFromWebcam);
       }
 
       async function initWebcamTracking() {
+        if (webcamTracking.active) {
+          return;
+        }
         if (!webcamVideo) {
           if (startHint) startHint.textContent = "webcam element missing";
           return;
@@ -1610,7 +1993,7 @@
           webcamTracking.faceReady = !!webcamTracking.faceDetector;
           webcamTracking.initState = "live";
           if (startHint) {
-            startHint.textContent = webcamTracking.handReady || webcamTracking.faceReady ? "hand tracking active" : "model not ready";
+            startHint.textContent = webcamTracking.handReady || webcamTracking.faceReady ? "mostra la mano per disegnare" : "model not ready";
           }
         } catch (error) {
           console.error("Webcam init failed", error);
@@ -1623,8 +2006,37 @@
         }
       }
 
+      async function startTraceSession() {
+        traceSystem.enabled = true;
+        traceSystem.recording = false;
+        traceSystem.current = null;
+        traceSystem.dwell = 0;
+        traceSystem.lastNormalized.set(webcamTracking.lastX, webcamTracking.lastY);
+        allowMouseFallback = false;
+        controls.autoRotate = false;
+        setHandOverlayVisible(true);
+        if (drawTraceButton) {
+          drawTraceButton.classList.add("is-active");
+          drawTraceButton.disabled = true;
+          drawTraceButton.textContent = "Rilevamento...";
+        }
+        if (startHint) {
+          startHint.style.display = "block";
+          startHint.textContent = "attiva webcam // cerca la mano";
+        }
+        try { await soundEngine.start(); } catch (error) { console.warn("Audio start failed", error); }
+        await initWebcamTracking();
+      }
+
       function onPointerDown() {
         soundEngine.start();
+      }
+
+      if (drawTraceButton) {
+        drawTraceButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          startTraceSession();
+        });
       }
 
       window.addEventListener("pointermove", onPointerMove, { passive: true });
@@ -1636,13 +2048,11 @@
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       });
 
-      // Seed the presence position near the center so the field reads immediately.
+      // Seed the presence position near the center without creating an initial network.
       mouse.set(0, 0);
-      updatePointer({ clientX: window.innerWidth * 0.5, clientY: window.innerHeight * 0.5 });
+      calculatePresencePoint();
       smoothedPresence.copy(presencePoint);
       motionState.targetSpeed = 0;
-
-      initWebcamTracking();
 
       window.addEventListener("beforeunload", () => {
         if (webcamTracking.stream) {
